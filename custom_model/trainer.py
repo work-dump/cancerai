@@ -752,6 +752,10 @@ class TrainingConfig:
     
     # Device
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # TensorBoard logging
+    use_tensorboard: bool = True
+    tensorboard_dir: str = "runs"
 
 
 # ============================================================================
@@ -815,6 +819,8 @@ class Tricorder3Trainer:
     - Weighted sampling for class imbalance
     - Competition metrics tracking
     - Best model checkpointing based on competition score
+    - TensorBoard logging
+    - Resume training from checkpoint
     """
     
     def __init__(
@@ -843,6 +849,22 @@ class Tricorder3Trainer:
             lr=self.config.learning_rate,
             weight_decay=self.config.weight_decay,
         )
+        
+        # TensorBoard writer
+        self.writer = None
+        if self.config.use_tensorboard:
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+                log_dir = os.path.join(
+                    self.config.tensorboard_dir,
+                    datetime.now().strftime("%Y%m%d-%H%M%S")
+                )
+                self.writer = SummaryWriter(log_dir=log_dir)
+                print(f"TensorBoard logging to: {log_dir}")
+                print(f"  View with: tensorboard --logdir {self.config.tensorboard_dir}")
+            except ImportError:
+                print("TensorBoard not installed. Install with: pip install tensorboard")
+                self.writer = None
         
         # State
         self.best_score = 0.0
@@ -987,6 +1009,7 @@ class Tricorder3Trainer:
         train_dataset: Dataset,
         val_dataset: Dataset,
         use_weighted_sampling: bool = True,
+        resume_from: Optional[str] = None,
     ) -> Dict[str, List[float]]:
         """
         Train the model.
@@ -995,10 +1018,18 @@ class Tricorder3Trainer:
             train_dataset: Training dataset
             val_dataset: Validation dataset
             use_weighted_sampling: Whether to use class-balanced sampling
+            resume_from: Path to checkpoint to resume training from
         
         Returns:
             Training history
         """
+        # Resume from checkpoint if specified
+        start_epoch = 0
+        if resume_from:
+            checkpoint = self.load_checkpoint(resume_from, resume_training=True)
+            start_epoch = checkpoint.get("epoch", 0) + 1
+            print(f"Resuming from epoch {start_epoch}")
+        
         # Create data loaders
         if use_weighted_sampling:
             sampler = create_weighted_sampler(train_dataset.labels)
@@ -1040,9 +1071,11 @@ class Tricorder3Trainer:
         print(f"Batch size: {self.config.batch_size}")
         print(f"Epochs: {self.config.epochs}")
         print(f"Learning rate: {self.config.learning_rate}")
+        if self.writer:
+            print(f"TensorBoard: {self.config.tensorboard_dir}")
         print(f"{'='*60}\n")
         
-        for epoch in range(self.config.epochs):
+        for epoch in range(start_epoch, self.config.epochs):
             # Train
             train_metrics = self.train_epoch(train_loader, epoch)
             
@@ -1056,6 +1089,18 @@ class Tricorder3Trainer:
             # Combine metrics
             metrics = {**train_metrics, **val_metrics, "epoch": epoch}
             self.history.append(metrics)
+            
+            # Log to TensorBoard
+            if self.writer:
+                self.writer.add_scalar("Loss/train", train_metrics["loss"], epoch)
+                self.writer.add_scalar("Loss/val", val_metrics["val_loss"], epoch)
+                self.writer.add_scalar("Accuracy/val", val_metrics["val_accuracy"], epoch)
+                self.writer.add_scalar("WeightedF1/val", val_metrics["val_weighted_f1"], epoch)
+                self.writer.add_scalar("CompetitionScore/val", val_metrics["val_competition_score"], epoch)
+                self.writer.add_scalar("F1_HighRisk/val", val_metrics["val_f1_high_risk"], epoch)
+                self.writer.add_scalar("F1_MediumRisk/val", val_metrics["val_f1_medium_risk"], epoch)
+                self.writer.add_scalar("F1_Benign/val", val_metrics["val_f1_benign"], epoch)
+                self.writer.add_scalar("LearningRate", self.optimizer.param_groups[0]["lr"], epoch)
             
             # Print progress
             print(
@@ -1090,6 +1135,10 @@ class Tricorder3Trainer:
             self.model.load_state_dict(self.best_model_state)
             print(f"\nRestored best model with score: {self.best_score:.4f}")
         
+        # Close TensorBoard writer
+        if self.writer:
+            self.writer.close()
+        
         return self.history
     
     def _save_checkpoint(self, epoch: int, metrics: Dict[str, float]):
@@ -1100,23 +1149,47 @@ class Tricorder3Trainer:
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
+            "best_score": self.best_score,
             "metrics": metrics,
             "config": self.config,
         }
         
+        # Save best model
         path = os.path.join(
             self.config.save_dir,
             f"best_model_score_{metrics['val_competition_score']:.4f}.pt"
         )
         torch.save(checkpoint, path)
         print(f"  -> Saved checkpoint: {path}")
+        
+        # Also save as 'latest.pt' for easy resume
+        latest_path = os.path.join(self.config.save_dir, "latest.pt")
+        torch.save(checkpoint, latest_path)
     
-    def load_checkpoint(self, path: str):
-        """Load model from checkpoint."""
+    def load_checkpoint(self, path: str, resume_training: bool = False):
+        """
+        Load model from checkpoint.
+        
+        Args:
+            path: Path to checkpoint file
+            resume_training: If True, also restore optimizer state and training progress
+        
+        Returns:
+            Dictionary with checkpoint info (epoch, metrics, etc.)
+        """
         checkpoint = torch.load(path, map_location=self.device)
         self.model.load_state_dict(checkpoint["model_state_dict"])
-        print(f"Loaded checkpoint from {path}")
-        return checkpoint.get("metrics", {})
+        
+        if resume_training:
+            if "optimizer_state_dict" in checkpoint:
+                self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            if "best_score" in checkpoint:
+                self.best_score = checkpoint["best_score"]
+            print(f"Resumed training from epoch {checkpoint.get('epoch', 0) + 1}")
+        else:
+            print(f"Loaded checkpoint from {path}")
+        
+        return checkpoint
 
 
 # ============================================================================

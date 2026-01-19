@@ -34,6 +34,7 @@ timm>=0.9.0                    # Pretrained models (EfficientNet, etc.)
 # ============================================================================
 onnx>=1.14.0
 onnxruntime>=1.15.0
+onnxscript                     # Required for PyTorch ONNX export
 
 # ============================================================================
 # Data Processing
@@ -61,7 +62,11 @@ tqdm>=4.65.0                   # Progress bars
 # kaggle>=1.5.0
 
 # ============================================================================
-# Optional: Experiment tracking (uncomment if needed)
+# Experiment Tracking
+# ============================================================================
+tensorboard>=2.13.0            # Training visualization
+
+# ============================================================================
+# Optional: Weights & Biases (uncomment if needed)
 # ============================================================================
 # wandb>=0.15.0
-# tensorboard>=2.13.0

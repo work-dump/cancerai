@@ -416,6 +416,8 @@ def train(args):
         patience=args.patience,
         save_dir=args.save_dir,
         num_workers=args.num_workers,
+        use_tensorboard=args.tensorboard,
+        tensorboard_dir=args.tensorboard_dir,
     )
     
     # Create trainer
@@ -427,6 +429,7 @@ def train(args):
         train_dataset,
         val_dataset,
         use_weighted_sampling=args.weighted_sampling,
+        resume_from=args.resume,
     )
     
     # Final evaluation
@@ -559,6 +562,17 @@ def parse_args():
     parser.add_argument("--save-dir", type=str, default="checkpoints")
     parser.add_argument("--export-onnx", action="store_true", default=True)
     parser.add_argument("--no-export-onnx", dest="export_onnx", action="store_false")
+    
+    # Resume training
+    parser.add_argument(
+        "--resume", type=str, default=None,
+        help="Path to checkpoint to resume training from (e.g., checkpoints/latest.pt)"
+    )
+    
+    # TensorBoard
+    parser.add_argument("--tensorboard", action="store_true", default=True)
+    parser.add_argument("--no-tensorboard", dest="tensorboard", action="store_false")
+    parser.add_argument("--tensorboard-dir", type=str, default="runs")
     
     # Other
     parser.add_argument("--seed", type=int, default=42)
