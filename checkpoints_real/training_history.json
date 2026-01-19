@@ -1,0 +1,62 @@
+[
+  {
+    "loss": 1.606148111820221,
+    "val_loss": 1.9857532978057861,
+    "val_accuracy": 0.0,
+    "val_weighted_f1": 0.0,
+    "val_prediction_score": 0.0,
+    "val_competition_score": 0.1,
+    "val_f1_high_risk": 0.0,
+    "val_f1_medium_risk": 0.0,
+    "val_f1_benign": 0.0,
+    "epoch": 0
+  },
+  {
+    "loss": 1.5191198110580444,
+    "val_loss": 2.175767262776693,
+    "val_accuracy": 0.0,
+    "val_weighted_f1": 0.0,
+    "val_prediction_score": 0.0,
+    "val_competition_score": 0.1,
+    "val_f1_high_risk": 0.0,
+    "val_f1_medium_risk": 0.0,
+    "val_f1_benign": 0.0,
+    "epoch": 1
+  },
+  {
+    "loss": 1.5868337750434875,
+    "val_loss": 1.9762477080027263,
+    "val_accuracy": 0.0,
+    "val_weighted_f1": 0.0,
+    "val_prediction_score": 0.0,
+    "val_competition_score": 0.1,
+    "val_f1_high_risk": 0.0,
+    "val_f1_medium_risk": 0.0,
+    "val_f1_benign": 0.0,
+    "epoch": 2
+  },
+  {
+    "loss": 1.3353849411010743,
+    "val_loss": 1.795843243598938,
+    "val_accuracy": 0.0,
+    "val_weighted_f1": 0.0,
+    "val_prediction_score": 0.0,
+    "val_competition_score": 0.1,
+    "val_f1_high_risk": 0.0,
+    "val_f1_medium_risk": 0.0,
+    "val_f1_benign": 0.0,
+    "epoch": 3
+  },
+  {
+    "loss": 1.4493790864944458,
+    "val_loss": 1.773858944574992,
+    "val_accuracy": 0.0,
+    "val_weighted_f1": 0.0,
+    "val_prediction_score": 0.0,
+    "val_competition_score": 0.1,
+    "val_f1_high_risk": 0.0,
+    "val_f1_medium_risk": 0.0,
+    "val_f1_benign": 0.0,
+    "epoch": 4
+  }
+]
