@@ -2,13 +2,31 @@
 # This file contains only the dependencies needed for training,
 # separate from the Bittensor subnet requirements.
 #
-# Install with: pip install -r requirements_train.txt
+# ============================================================================
+# INSTALLATION (2 steps required for CUDA support):
+# ============================================================================
+#
+# Step 1: Install PyTorch with CUDA FIRST (not from this file)
+#
+#   For CUDA 13.0 (requires driver 580+, PyTorch 2.10+):
+#     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+#
+#   For CUDA 12.1:
+#     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#
+#   For CUDA 11.8:
+#     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+#
+# Step 2: Install remaining dependencies
+#     pip install -r requirements_train.txt
+#
+# ============================================================================
 
 # ============================================================================
-# Core Deep Learning
+# Core Deep Learning (install separately with CUDA - see above)
 # ============================================================================
-torch>=2.0.0
-torchvision>=0.15.0
+# torch>=2.0.0              # INSTALL SEPARATELY with CUDA support!
+# torchvision>=0.15.0       # INSTALL SEPARATELY with CUDA support!
 timm>=0.9.0                    # Pretrained models (EfficientNet, etc.)
 
 # ============================================================================
