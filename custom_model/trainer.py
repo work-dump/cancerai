@@ -745,6 +745,7 @@ class TrainingConfig:
     # Checkpointing
     save_dir: str = "checkpoints"
     save_best_only: bool = True
+    save_every_n_epochs: int = 5  # Save checkpoint every N epochs (0 = only save best)
     
     # Early stopping
     patience: int = 10
@@ -1113,17 +1114,26 @@ class Tricorder3Trainer:
             
             # Check for best model (based on competition score)
             current_score = val_metrics["val_competition_score"]
-            if current_score > self.best_score + self.config.min_delta:
+            is_best = current_score > self.best_score + self.config.min_delta
+            
+            if is_best:
                 self.best_score = current_score
                 self.best_model_state = copy.deepcopy(self.model.state_dict())
                 self.patience_counter = 0
                 print(f"  -> New best score: {self.best_score:.4f}")
                 
-                # Save checkpoint
+                # Save best checkpoint
                 if self.config.save_dir:
-                    self._save_checkpoint(epoch, val_metrics)
+                    self._save_checkpoint(epoch, val_metrics, is_best=True)
             else:
                 self.patience_counter += 1
+            
+            # Save periodic checkpoint (every N epochs)
+            if (self.config.save_every_n_epochs > 0 and 
+                (epoch + 1) % self.config.save_every_n_epochs == 0 and 
+                not is_best):  # Don't double-save if already saved as best
+                if self.config.save_dir:
+                    self._save_checkpoint(epoch, val_metrics, is_best=False)
             
             # Early stopping
             if self.patience_counter >= self.config.patience:
@@ -1141,7 +1151,7 @@ class Tricorder3Trainer:
         
         return self.history
     
-    def _save_checkpoint(self, epoch: int, metrics: Dict[str, float]):
+    def _save_checkpoint(self, epoch: int, metrics: Dict[str, float], is_best: bool = False):
         """Save model checkpoint."""
         os.makedirs(self.config.save_dir, exist_ok=True)
         
@@ -1154,15 +1164,28 @@ class Tricorder3Trainer:
             "config": self.config,
         }
         
-        # Save best model
-        path = os.path.join(
-            self.config.save_dir,
-            f"best_model_score_{metrics['val_competition_score']:.4f}.pt"
-        )
-        torch.save(checkpoint, path)
-        print(f"  -> Saved checkpoint: {path}")
+        if is_best:
+            # Save best model with score in filename
+            path = os.path.join(
+                self.config.save_dir,
+                f"best_model_epoch{epoch+1}_score_{metrics['val_competition_score']:.4f}.pt"
+            )
+            torch.save(checkpoint, path)
+            print(f"  -> Saved best checkpoint: {path}")
+            
+            # Also save as 'best.pt' for easy access
+            best_path = os.path.join(self.config.save_dir, "best.pt")
+            torch.save(checkpoint, best_path)
+        else:
+            # Save periodic checkpoint with epoch number
+            path = os.path.join(
+                self.config.save_dir,
+                f"checkpoint_epoch{epoch+1}.pt"
+            )
+            torch.save(checkpoint, path)
+            print(f"  -> Saved periodic checkpoint: {path}")
         
-        # Also save as 'latest.pt' for easy resume
+        # Always save as 'latest.pt' for easy resume
         latest_path = os.path.join(self.config.save_dir, "latest.pt")
         torch.save(checkpoint, latest_path)
     

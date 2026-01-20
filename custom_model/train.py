@@ -415,6 +415,7 @@ def train(args):
         label_smoothing=args.label_smoothing,
         patience=args.patience,
         save_dir=args.save_dir,
+        save_every_n_epochs=args.save_every,
         num_workers=args.num_workers,
         use_tensorboard=args.tensorboard,
         tensorboard_dir=args.tensorboard_dir,
@@ -560,6 +561,10 @@ def parse_args():
     
     # Output
     parser.add_argument("--save-dir", type=str, default="checkpoints")
+    parser.add_argument(
+        "--save-every", type=int, default=5,
+        help="Save checkpoint every N epochs (0 = only save best)"
+    )
     parser.add_argument("--export-onnx", action="store_true", default=True)
     parser.add_argument("--no-export-onnx", dest="export_onnx", action="store_false")
     
