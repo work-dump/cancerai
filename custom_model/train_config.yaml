@@ -1,0 +1,103 @@
+# ============================================================================
+# Tricorder-3 Training Configuration
+# ============================================================================
+# This file configures the model training. Edit values below and run:
+#   python custom_model/train.py
+#
+# Command-line arguments will override these settings.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Data Settings
+# ----------------------------------------------------------------------------
+data:
+  data_dir: "training_data"                    # Path to dataset directory
+  labels_file: "training_data/labels_final.csv" # Path to labels CSV (null = auto-detect)
+  val_split: 0.2                               # Validation split ratio (0.0-1.0)
+
+# ----------------------------------------------------------------------------
+# Model Settings
+# ----------------------------------------------------------------------------
+model:
+  type: "balanced"                             # Options: lightweight, balanced, larger
+  # lightweight: ~20MB, faster but less accurate
+  # balanced:    ~45MB, good balance (recommended)
+  # larger:      ~80MB, more accurate but slower
+
+# ----------------------------------------------------------------------------
+# Training Settings
+# ----------------------------------------------------------------------------
+training:
+  epochs: 50                                   # Number of training epochs
+  batch_size: 16                               # Batch size (reduce if out of memory)
+  learning_rate: 0.001                         # Initial learning rate
+  weight_decay: 0.01                           # L2 regularization
+  dropout: 0.4                                 # Dropout rate
+  patience: 10                                 # Early stopping patience
+  num_workers: 4                               # Data loader workers (0 for Windows)
+  seed: 42                                     # Random seed for reproducibility
+
+# ----------------------------------------------------------------------------
+# Data Augmentation
+# ----------------------------------------------------------------------------
+augmentation:
+  use_mixup: true                              # Enable mixup augmentation
+  mixup_alpha: 0.4                             # Mixup interpolation strength
+  label_smoothing: 0.1                         # Label smoothing factor
+  weighted_sampling: true                      # Oversample HIGH_RISK classes
+
+# ----------------------------------------------------------------------------
+# Checkpointing
+# ----------------------------------------------------------------------------
+checkpoints:
+  save_dir: "checkpoints"                      # Directory to save checkpoints
+  save_every: 5                                # Save every N epochs (0 = only best)
+  export_onnx: true                            # Export to ONNX after training
+  resume: null                                 # Path to checkpoint to resume from
+                                               # Example: "checkpoints/latest.pt"
+
+# ----------------------------------------------------------------------------
+# Logging
+# ----------------------------------------------------------------------------
+logging:
+  tensorboard: true                            # Enable TensorBoard logging
+  tensorboard_dir: "runs"                      # TensorBoard log directory
+
+# ----------------------------------------------------------------------------
+# PyTorch Settings
+# ----------------------------------------------------------------------------
+pytorch:
+  weights_only: false                          # Set false for PyTorch 2.6+ compatibility
+
+# ----------------------------------------------------------------------------
+# Dataset Download Settings
+# ----------------------------------------------------------------------------
+# Used by: python custom_model/download_datasets.py
+# 
+# To download ALL datasets: python custom_model/download_datasets.py --all
+download:
+  output_dir: "training_data"                  # Where to save downloaded datasets
+  
+  # Kaggle datasets (requires Kaggle API setup)
+  kaggle:
+    ham10000: true                             # 10,015 images, 7 classes - ESSENTIAL
+    isic_2019: true                            # 25,331 images, 8 classes - Recommended
+    isic_2020: true                            # 33,126 images, melanoma detection
+    skin_cancer_9class: false                  # 9-class extended dataset
+    dermnet: false                             # 23,000 images, 23 classes
+    isic_2018: false                           # ISIC 2018 challenge
+    skin_lesion_7class: false                  # HAM10000 with segmentation
+  
+  # HuggingFace datasets (auto-download, no API needed)
+  huggingface:
+    marmal88_skin: false                       # Skin cancer from HuggingFace
+    isic_hf: false                             # ISIC on HuggingFace
+  
+  # Direct downloads (URLs)
+  direct:
+    ph2: false                                 # 200 images, melanoma/nevi
+  
+  # Processing options
+  balance_dataset: true                        # Balance after download
+  max_per_class: 3000                          # Max samples per class
+  min_per_class: 500                           # Min samples (oversample if less)

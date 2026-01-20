@@ -47,14 +47,17 @@ Pillow>=10.0.0
 # ============================================================================
 # Dataset Download
 # ============================================================================
-datasets                        # HuggingFace datasets
+kaggle                          # Kaggle API for dataset download
+datasets                        # HuggingFace datasets library
 huggingface-hub>=0.16.0        # HuggingFace model/dataset hub
 requests>=2.28.0
+rarfile                         # For extracting .rar archives (optional)
 
 # ============================================================================
 # Progress & Utilities
 # ============================================================================
 tqdm>=4.65.0                   # Progress bars
+pyyaml>=6.0                    # Config file loading
 
 # ============================================================================
 # Optional: Kaggle datasets (uncomment if using Kaggle)

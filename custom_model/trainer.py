@@ -1027,7 +1027,8 @@ class Tricorder3Trainer:
         # Resume from checkpoint if specified
         start_epoch = 0
         if resume_from:
-            checkpoint = self.load_checkpoint(resume_from, resume_training=True)
+            # weights_only=False needed for PyTorch 2.6+ to load TrainingConfig
+            checkpoint = self.load_checkpoint(resume_from, resume_training=True, weights_only=False)
             start_epoch = checkpoint.get("epoch", 0) + 1
             print(f"Resuming from epoch {start_epoch}")
         
@@ -1189,18 +1190,20 @@ class Tricorder3Trainer:
         latest_path = os.path.join(self.config.save_dir, "latest.pt")
         torch.save(checkpoint, latest_path)
     
-    def load_checkpoint(self, path: str, resume_training: bool = False):
+    def load_checkpoint(self, path: str, resume_training: bool = False, weights_only: bool = False):
         """
         Load model from checkpoint.
         
         Args:
             path: Path to checkpoint file
             resume_training: If True, also restore optimizer state and training progress
+            weights_only: If False, allows loading custom objects (needed for TrainingConfig)
         
         Returns:
             Dictionary with checkpoint info (epoch, metrics, etc.)
         """
-        checkpoint = torch.load(path, map_location=self.device)
+        # weights_only=False needed for PyTorch 2.6+ to load TrainingConfig
+        checkpoint = torch.load(path, map_location=self.device, weights_only=weights_only)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         
         if resume_training:

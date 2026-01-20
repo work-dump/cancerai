@@ -1,40 +1,35 @@
 #!/usr/bin/env python3
 """
-Dataset Download and Preparation Script for Tricorder-3 Competition
+Dataset Download Script for Tricorder-3 Competition
 
-This script downloads multiple skin lesion datasets and prepares them
-for training a high-scoring competition model.
+Downloads skin lesion datasets from multiple sources:
+- Kaggle (HAM10000, ISIC 2019, ISIC 2020, etc.)
+- HuggingFace (skin cancer datasets)
+- Direct URLs (PH2, BCN20000, etc.)
+- ISIC Archive
 
-Datasets:
-1. HAM10000 - 10,015 images, 7 classes
-2. ISIC 2019 - 25,331 images, 9 classes  
-3. Additional HuggingFace datasets
-
-All datasets are mapped to Tricorder-3's 11 classes:
-0: AKIEC, 1: BCC, 2: BEN_OTH, 3: BKL, 4: DF,
-5: INF, 6: MAL_OTH, 7: MEL, 8: NV, 9: SCCKA, 10: VASC
+Total potential data: 500,000+ images
 
 Usage:
-    python custom_model/download_datasets.py --output-dir training_data
-    python custom_model/download_datasets.py --output-dir training_data --skip-large
+    python custom_model/download_datasets.py              # Download all enabled
+    python custom_model/download_datasets.py --all        # Download everything
+    python custom_model/download_datasets.py --source kaggle  # Kaggle only
+    python custom_model/download_datasets.py --list       # List all datasets
 """
 
 import os
 import sys
-import json
-import shutil
 import argparse
-import hashlib
-from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any
-from collections import defaultdict
-import urllib.request
+import shutil
 import zipfile
 import tarfile
+import urllib.request
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
-from PIL import Image
 from tqdm import tqdm
 
 # ============================================================================
@@ -42,80 +37,74 @@ from tqdm import tqdm
 # ============================================================================
 
 TRICORDER_CLASSES = [
-    "AKIEC",    # 0: Actinic keratosis/intraepidermal carcinoma
+    "AKIEC",    # 0: Actinic keratosis
     "BCC",      # 1: Basal cell carcinoma
-    "BEN_OTH",  # 2: Other benign proliferations
-    "BKL",      # 3: Benign keratinocytic lesion
+    "BEN_OTH",  # 2: Other benign
+    "BKL",      # 3: Benign keratosis
     "DF",       # 4: Dermatofibroma
-    "INF",      # 5: Inflammatory and infectious
-    "MAL_OTH",  # 6: Other malignant proliferations
+    "INF",      # 5: Inflammatory
+    "MAL_OTH",  # 6: Other malignant
     "MEL",      # 7: Melanoma
-    "NV",       # 8: Melanocytic nevus
+    "NV",       # 8: Nevus
     "SCCKA",    # 9: SCC/Keratoacanthoma
-    "VASC",     # 10: Vascular lesions
+    "VASC",     # 10: Vascular
 ]
 
-# Mapping from various dataset labels to Tricorder-3 classes
 LABEL_MAPPING = {
-    # HAM10000 / ISIC standard labels
-    "akiec": "AKIEC",
-    "bcc": "BCC",
-    "bkl": "BKL",
-    "df": "DF",
-    "mel": "MEL",
-    "nv": "NV",
-    "vasc": "VASC",
+    # HAM10000 / ISIC standard
+    "akiec": "AKIEC", "bcc": "BCC", "bkl": "BKL", "df": "DF",
+    "mel": "MEL", "nv": "NV", "vasc": "VASC",
     
-    # ISIC 2019 additional
-    "scc": "SCCKA",
-    "ak": "AKIEC",
+    # ISIC 2019
+    "ak": "AKIEC", "scc": "SCCKA", "melanoma": "MEL", "nevus": "NV",
     
     # Full names
-    "melanoma": "MEL",
-    "nevus": "NV",
+    "squamous cell carcinoma": "SCCKA",
     "basal cell carcinoma": "BCC",
     "actinic keratosis": "AKIEC",
     "benign keratosis": "BKL",
     "dermatofibroma": "DF",
     "vascular lesion": "VASC",
-    "vascular": "VASC",
+    "melanocytic nevus": "NV",
+    "seborrheic keratosis": "BKL",
+    "lichenoid keratosis": "BKL",
+    "solar lentigo": "BKL",
+    "lentigo nos": "BKL",
+    "cafe-au-lait macule": "BEN_OTH",
+    "atypical melanocytic proliferation": "MEL",
+    "pigmented benign keratosis": "BKL",
+    
+    # BCN20000 classes
+    "melanocytic nevi": "NV",
+    "melanoma": "MEL",
+    "benign keratosis": "BKL",
+    "basal cell carcinoma": "BCC",
+    "actinic keratosis": "AKIEC",
+    "vascular lesion": "VASC",
+    "dermatofibroma": "DF",
     "squamous cell carcinoma": "SCCKA",
-    "keratoacanthoma": "SCCKA",
     
-    # Other benign -> BEN_OTH
+    # Generic mappings
     "benign": "BEN_OTH",
-    "other": "BEN_OTH",
-    "unknown": "BEN_OTH",
-    "unk": "BEN_OTH",
-    
-    # Inflammatory -> INF
-    "inflammatory": "INF",
-    "infection": "INF",
-    "psoriasis": "INF",
-    "eczema": "INF",
-    
-    # Other malignant -> MAL_OTH
     "malignant": "MAL_OTH",
-    "merkel": "MAL_OTH",
-    "kaposi": "MAL_OTH",
+    "unknown": "BEN_OTH",
+    "other": "BEN_OTH",
 }
 
-def map_label_to_tricorder(label: str) -> Optional[str]:
-    """Map any label to Tricorder-3 class."""
+
+def map_label(label: str) -> Optional[str]:
+    """Map dataset label to Tricorder-3 class."""
     if not label:
         return None
     
     label_lower = str(label).lower().strip()
     
-    # Direct mapping
     if label_lower in LABEL_MAPPING:
         return LABEL_MAPPING[label_lower]
     
-    # Check if already a valid class
     if label_lower.upper() in TRICORDER_CLASSES:
         return label_lower.upper()
     
-    # Partial matching
     for key, value in LABEL_MAPPING.items():
         if key in label_lower or label_lower in key:
             return value
@@ -124,62 +113,188 @@ def map_label_to_tricorder(label: str) -> Optional[str]:
 
 
 # ============================================================================
-# Dataset Downloaders
+# Dataset Definitions
 # ============================================================================
 
-class DatasetDownloader:
-    """Base class for dataset downloaders."""
-    
-    def __init__(self, output_dir: str):
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        
-    def download(self) -> Tuple[List[str], List[str], List[Dict]]:
-        """Download dataset and return (image_paths, labels, metadata)."""
-        raise NotImplementedError
+KAGGLE_DATASETS = {
+    "ham10000": {
+        "id": "kmader/skin-cancer-mnist-ham10000",
+        "name": "HAM10000",
+        "description": "10,015 dermoscopic images, 7 classes",
+        "size": "~3 GB",
+    },
+    "isic_2019": {
+        "id": "andrewmvd/isic-2019",
+        "name": "ISIC 2019",
+        "description": "25,331 images, 8 diagnostic categories",
+        "size": "~9 GB",
+    },
+    "isic_2020": {
+        "id": "cdeotte/jpeg-melanoma-256x256",
+        "name": "ISIC 2020 (256x256)",
+        "description": "33,126 images for melanoma detection",
+        "size": "~2 GB",
+    },
+    "skin_cancer_9class": {
+        "id": "nodoubttome/skin-cancer9-classesisic",
+        "name": "Skin Cancer 9 Classes",
+        "description": "9-class ISIC skin cancer dataset",
+        "size": "~4 GB",
+    },
+    "dermnet": {
+        "id": "shubhamgoel27/dermnet",
+        "name": "DermNet",
+        "description": "23,000 images, 23 disease classes",
+        "size": "~5 GB",
+    },
+    "isic_2018": {
+        "id": "kmader/skin-cancer-isic",
+        "name": "ISIC 2018",
+        "description": "ISIC 2018 challenge dataset",
+        "size": "~2 GB",
+    },
+    "skin_lesion_7class": {
+        "id": "surajghuwalewala/ham1000-segmentation-and-classification",
+        "name": "HAM10000 Segmentation",
+        "description": "HAM10000 with segmentation masks",
+        "size": "~1 GB",
+    },
+}
+
+HUGGINGFACE_DATASETS = {
+    "marmal88_skin": {
+        "id": "marmal88/skin_cancer",
+        "name": "Skin Cancer (HF)",
+        "description": "Skin cancer classification dataset",
+    },
+    "isic_hf": {
+        "id": "NeuronZero/Skin-Cancer-ISIC",
+        "name": "ISIC (HuggingFace)",
+        "description": "ISIC dataset on HuggingFace",
+    },
+}
+
+DIRECT_DOWNLOADS = {
+    "ph2": {
+        "url": "https://www.dropbox.com/s/k88qukc20ljnbuo/PH2Dataset.rar?dl=1",
+        "name": "PH2 Dataset",
+        "description": "200 dermoscopic images (40 melanoma, 80 atypical nevi, 80 common nevi)",
+        "size": "~425 MB",
+    },
+}
 
 
-class HuggingFaceDownloader(DatasetDownloader):
-    """Download datasets from HuggingFace."""
+# ============================================================================
+# Configuration Loading
+# ============================================================================
+
+def load_config(config_path: str = None) -> dict:
+    """Load configuration from YAML file."""
+    if config_path is None:
+        config_path = Path(__file__).parent / "train_config.yaml"
+    else:
+        config_path = Path(config_path)
     
-    def __init__(self, output_dir: str, dataset_id: str, name: str = None):
-        super().__init__(output_dir)
-        self.dataset_id = dataset_id
-        self.name = name or dataset_id.split("/")[-1]
+    if not config_path.exists():
+        return {}
+    
+    try:
+        import yaml
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        print(f"Loaded config from: {config_path}")
+        return config or {}
+    except ImportError:
+        return {}
+    except Exception:
+        return {}
+
+
+def get_config_value(config: dict, *keys, default=None):
+    """Get nested config value safely."""
+    value = config
+    for key in keys:
+        if isinstance(value, dict) and key in value:
+            value = value[key]
+        else:
+            return default
+    return value if value is not None else default
+
+
+# ============================================================================
+# Download Functions
+# ============================================================================
+
+def check_kaggle_setup() -> bool:
+    """Check if Kaggle API is properly configured."""
+    try:
+        import kaggle
+        kaggle.api.authenticate()
+        print("✓ Kaggle API authenticated")
+        return True
+    except ImportError:
+        print("✗ Kaggle not installed. Run: pip install kaggle")
+        return False
+    except Exception as e:
+        print(f"✗ Kaggle auth failed: {e}")
+        print("\nSetup Kaggle API:")
+        print("  1. Go to https://www.kaggle.com/settings")
+        print("  2. Click 'Create New Token'")
+        print("  3. Save kaggle.json to:")
+        print("     Windows: C:\\Users\\<username>\\.kaggle\\kaggle.json")
+        print("     Linux:   ~/.kaggle/kaggle.json")
+        return False
+
+
+def download_kaggle_dataset(dataset_id: str, output_dir: Path) -> bool:
+    """Download a Kaggle dataset."""
+    try:
+        import kaggle
         
-    def download(self) -> Tuple[List[str], List[str], List[Dict]]:
+        print(f"\n📥 Downloading from Kaggle: {dataset_id}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        kaggle.api.dataset_download_files(
+            dataset_id,
+            path=str(output_dir),
+            unzip=True,
+            quiet=False,
+        )
+        
+        print(f"✓ Downloaded: {dataset_id}")
+        return True
+        
+    except Exception as e:
+        print(f"✗ Failed: {e}")
+        return False
+
+
+def download_huggingface_dataset(dataset_id: str, output_dir: Path) -> bool:
+    """Download a HuggingFace dataset."""
+    try:
         from datasets import load_dataset
+        from PIL import Image
         
-        print(f"\n{'='*60}")
-        print(f"Downloading: {self.dataset_id}")
-        print(f"{'='*60}")
+        print(f"\n📥 Downloading from HuggingFace: {dataset_id}")
+        output_dir.mkdir(parents=True, exist_ok=True)
         
-        try:
-            dataset = load_dataset(self.dataset_id, trust_remote_code=True)
-        except Exception as e:
-            print(f"Failed to load {self.dataset_id}: {e}")
-            return [], [], []
+        dataset = load_dataset(dataset_id, trust_remote_code=True)
         
-        image_paths = []
-        labels = []
-        metadata = []
+        images_dir = output_dir / "images"
+        images_dir.mkdir(exist_ok=True)
         
-        # Process all splits
+        records = []
+        idx = 0
+        
         for split_name in dataset.keys():
             split = dataset[split_name]
-            print(f"Processing split: {split_name} ({len(split)} samples)")
+            print(f"  Processing {split_name}: {len(split)} samples")
             
-            save_dir = self.output_dir / self.name / split_name
-            save_dir.mkdir(parents=True, exist_ok=True)
-            
-            for idx, item in enumerate(tqdm(split, desc=f"  {split_name}")):
+            for item in tqdm(split, desc=f"    {split_name}"):
                 try:
                     # Get image
-                    if 'image' in item:
-                        img = item['image']
-                    elif 'img' in item:
-                        img = item['img']
-                    else:
+                    img = item.get('image') or item.get('img')
+                    if img is None:
                         continue
                     
                     # Get label
@@ -192,656 +307,559 @@ class HuggingFaceDownloader(DatasetDownloader):
                     if label is None:
                         continue
                     
-                    # Map to Tricorder class
-                    if isinstance(label, int):
-                        # Try to get label name from features
-                        if hasattr(split.features.get('label', None), 'names'):
-                            label = split.features['label'].names[label]
+                    # Map label
+                    if isinstance(label, int) and hasattr(split.features.get('label', None), 'names'):
+                        label = split.features['label'].names[label]
                     
-                    tricorder_label = map_label_to_tricorder(str(label))
-                    if tricorder_label is None:
+                    mapped_label = map_label(str(label))
+                    if mapped_label is None:
                         continue
                     
                     # Save image
-                    img_path = save_dir / f"{self.name}_{split_name}_{idx:06d}.jpg"
+                    img_path = images_dir / f"hf_{idx:06d}.jpg"
                     if isinstance(img, Image.Image):
-                        img = img.convert('RGB')
-                        img.save(img_path, 'JPEG', quality=95)
-                    else:
-                        continue
+                        img.convert('RGB').save(img_path, 'JPEG', quality=95)
                     
-                    image_paths.append(str(img_path))
-                    labels.append(tricorder_label)
+                    records.append({
+                        "image": str(img_path),
+                        "label": mapped_label,
+                    })
+                    idx += 1
                     
-                    # Get metadata
-                    meta = {}
-                    if 'age' in item:
-                        meta['age'] = item['age']
-                    if 'sex' in item:
-                        meta['gender'] = item['sex']
-                    elif 'gender' in item:
-                        meta['gender'] = item['gender']
-                    if 'localization' in item:
-                        meta['location'] = item['localization']
-                    elif 'location' in item:
-                        meta['location'] = item['location']
-                    
-                    metadata.append(meta)
-                    
-                except Exception as e:
+                except Exception:
                     continue
         
-        print(f"Downloaded {len(image_paths)} images from {self.dataset_id}")
-        return image_paths, labels, metadata
+        # Save metadata
+        if records:
+            df = pd.DataFrame(records)
+            df.to_csv(output_dir / "labels.csv", index=False)
+        
+        print(f"✓ Downloaded {len(records)} images")
+        return True
+        
+    except ImportError:
+        print("✗ HuggingFace datasets not installed. Run: pip install datasets")
+        return False
+    except Exception as e:
+        print(f"✗ Failed: {e}")
+        return False
 
 
-class KaggleDownloader(DatasetDownloader):
-    """Download datasets from Kaggle."""
-    
-    def __init__(self, output_dir: str, dataset_id: str, name: str = None):
-        super().__init__(output_dir)
-        self.dataset_id = dataset_id
-        self.name = name or dataset_id.split("/")[-1]
+def download_url(url: str, output_path: Path) -> bool:
+    """Download file from URL with progress bar."""
+    try:
+        print(f"\n📥 Downloading: {url}")
         
-    def download(self) -> Tuple[List[str], List[str], List[Dict]]:
-        import subprocess
+        # Get file size
+        response = urllib.request.urlopen(url)
+        total_size = int(response.headers.get('content-length', 0))
         
-        print(f"\n{'='*60}")
-        print(f"Downloading from Kaggle: {self.dataset_id}")
-        print(f"{'='*60}")
-        
-        save_dir = self.output_dir / self.name
-        save_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Check if kaggle is configured
-        kaggle_config = Path.home() / ".kaggle" / "kaggle.json"
-        if not kaggle_config.exists():
-            print(f"WARNING: Kaggle not configured. Please:")
-            print(f"  1. Go to https://www.kaggle.com/account")
-            print(f"  2. Create New API Token")
-            print(f"  3. Save to ~/.kaggle/kaggle.json")
-            print(f"  4. Run: chmod 600 ~/.kaggle/kaggle.json")
-            return [], [], []
-        
-        try:
-            # Download dataset
-            cmd = f"kaggle datasets download -d {self.dataset_id} -p {save_dir} --unzip"
-            subprocess.run(cmd.split(), check=True)
+        # Download with progress
+        with tqdm(total=total_size, unit='B', unit_scale=True, desc="  Downloading") as pbar:
+            def reporthook(count, block_size, total_size):
+                pbar.update(block_size)
             
-            # Find and process the data
-            return self._process_downloaded_data(save_dir)
-            
-        except Exception as e:
-            print(f"Failed to download from Kaggle: {e}")
-            return [], [], []
-    
-    def _process_downloaded_data(self, data_dir: Path) -> Tuple[List[str], List[str], List[Dict]]:
-        """Process downloaded Kaggle data."""
-        image_paths = []
-        labels = []
-        metadata = []
+            urllib.request.urlretrieve(url, output_path, reporthook=reporthook)
         
-        # Look for CSV files
-        csv_files = list(data_dir.rglob("*.csv"))
+        print(f"✓ Downloaded to: {output_path}")
+        return True
         
-        for csv_file in csv_files:
-            try:
-                df = pd.read_csv(csv_file)
-                
-                # Find image and label columns
-                img_col = None
-                label_col = None
-                
-                for col in df.columns:
-                    col_lower = col.lower()
-                    if 'image' in col_lower or 'file' in col_lower:
-                        img_col = col
-                    if 'label' in col_lower or 'dx' in col_lower or 'class' in col_lower:
-                        label_col = col
-                
-                if img_col is None or label_col is None:
-                    continue
-                
-                # Find image directory
-                img_dirs = [d for d in data_dir.rglob("*") if d.is_dir() and any(d.glob("*.jpg"))]
-                
-                for _, row in df.iterrows():
-                    img_name = str(row[img_col])
-                    if not img_name.endswith(('.jpg', '.jpeg', '.png')):
-                        img_name += '.jpg'
-                    
-                    # Find image file
-                    img_path = None
-                    for img_dir in img_dirs:
-                        potential_path = img_dir / img_name
-                        if potential_path.exists():
-                            img_path = potential_path
-                            break
-                    
-                    if img_path is None:
-                        continue
-                    
-                    # Map label
-                    tricorder_label = map_label_to_tricorder(str(row[label_col]))
-                    if tricorder_label is None:
-                        continue
-                    
-                    image_paths.append(str(img_path))
-                    labels.append(tricorder_label)
-                    
-                    # Metadata
-                    meta = {}
-                    if 'age' in df.columns:
-                        meta['age'] = row['age']
-                    if 'sex' in df.columns:
-                        meta['gender'] = row['sex']
-                    if 'localization' in df.columns:
-                        meta['location'] = row['localization']
-                    metadata.append(meta)
-                    
-            except Exception as e:
-                continue
-        
-        print(f"Processed {len(image_paths)} images from Kaggle dataset")
-        return image_paths, labels, metadata
+    except Exception as e:
+        print(f"✗ Failed: {e}")
+        return False
 
 
-class URLDownloader(DatasetDownloader):
-    """Download datasets from direct URLs."""
-    
-    def __init__(self, output_dir: str, url: str, name: str):
-        super().__init__(output_dir)
-        self.url = url
-        self.name = name
+def extract_archive(archive_path: Path, output_dir: Path) -> bool:
+    """Extract zip, tar, or rar archive."""
+    try:
+        print(f"  Extracting: {archive_path.name}")
         
-    def download(self) -> Tuple[List[str], List[str], List[Dict]]:
-        print(f"\n{'='*60}")
-        print(f"Downloading: {self.name}")
-        print(f"URL: {self.url}")
-        print(f"{'='*60}")
-        
-        save_dir = self.output_dir / self.name
-        save_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Download file
-        filename = self.url.split("/")[-1]
-        filepath = save_dir / filename
-        
-        if not filepath.exists():
-            print(f"Downloading {filename}...")
+        if archive_path.suffix == '.zip':
+            with zipfile.ZipFile(archive_path, 'r') as z:
+                z.extractall(output_dir)
+        elif archive_path.suffix in ['.tar', '.gz', '.tgz']:
+            with tarfile.open(archive_path, 'r:*') as t:
+                t.extractall(output_dir)
+        elif archive_path.suffix == '.rar':
             try:
-                urllib.request.urlretrieve(self.url, filepath)
-            except Exception as e:
-                print(f"Failed to download: {e}")
-                return [], [], []
+                import rarfile
+                with rarfile.RarFile(archive_path, 'r') as r:
+                    r.extractall(output_dir)
+            except ImportError:
+                print("    ⚠ Install rarfile: pip install rarfile")
+                return False
+        else:
+            print(f"    ⚠ Unknown archive format: {archive_path.suffix}")
+            return False
         
-        # Extract if archive
-        if filename.endswith('.zip'):
-            print(f"Extracting {filename}...")
-            with zipfile.ZipFile(filepath, 'r') as z:
-                z.extractall(save_dir)
-        elif filename.endswith(('.tar.gz', '.tgz')):
-            print(f"Extracting {filename}...")
-            with tarfile.open(filepath, 'r:gz') as t:
-                t.extractall(save_dir)
+        print(f"  ✓ Extracted")
+        return True
         
-        # Process extracted data
-        return self._process_data(save_dir)
+    except Exception as e:
+        print(f"  ✗ Extraction failed: {e}")
+        return False
+
+
+# ============================================================================
+# Dataset Processing Functions
+# ============================================================================
+
+def process_ham10000(data_dir: Path) -> Tuple[List[str], List[str], List[dict]]:
+    """Process HAM10000 dataset."""
+    print("\n📊 Processing HAM10000...")
     
-    def _process_data(self, data_dir: Path) -> Tuple[List[str], List[str], List[Dict]]:
-        """Process downloaded data - subclasses can override."""
+    # Find metadata CSV
+    csv_path = None
+    for pattern in ["*metadata*.csv", "*HAM*.csv", "*.csv"]:
+        matches = list(data_dir.rglob(pattern))
+        if matches:
+            csv_path = matches[0]
+            break
+    
+    if csv_path is None:
+        print("  ✗ No metadata CSV found")
         return [], [], []
-
-
-# ============================================================================
-# Dataset Collection
-# ============================================================================
-
-HUGGINGFACE_DATASETS = [
-    # Primary datasets with good class coverage
-    "marmal88/skin_cancer",
-    "NeuronZero/Skin-Cancer-ISIC",
-    "harshildarji/isic-2020",
-]
-
-KAGGLE_DATASETS = [
-    # HAM10000 - the gold standard
-    ("kmader/skin-cancer-mnist-ham10000", "ham10000"),
-    # ISIC datasets
-    ("nodoubttome/skin-cancer9-classesisic", "isic_9class"),
-]
-
-
-# ============================================================================
-# Main Functions
-# ============================================================================
-
-def download_all_datasets(
-    output_dir: str,
-    skip_kaggle: bool = False,
-    skip_large: bool = False,
-) -> Tuple[List[str], List[str], List[Dict]]:
-    """
-    Download all available datasets.
     
-    Returns:
-        Combined (image_paths, labels, metadata) from all datasets
-    """
-    all_images = []
-    all_labels = []
-    all_metadata = []
+    df = pd.read_csv(csv_path)
+    print(f"  Found {len(df)} entries in {csv_path.name}")
     
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
+    # Find image directories
+    image_dirs = list(data_dir.rglob("*images*")) + [data_dir]
     
-    # Download from HuggingFace
-    print("\n" + "="*70)
-    print("DOWNLOADING FROM HUGGINGFACE")
-    print("="*70)
+    images, labels, metadata = [], [], []
     
-    for dataset_id in HUGGINGFACE_DATASETS:
-        try:
-            downloader = HuggingFaceDownloader(output_dir, dataset_id)
-            images, labels, metadata = downloader.download()
-            all_images.extend(images)
-            all_labels.extend(labels)
-            all_metadata.extend(metadata)
-        except Exception as e:
-            print(f"Failed {dataset_id}: {e}")
-    
-    # Download from Kaggle
-    if not skip_kaggle:
-        print("\n" + "="*70)
-        print("DOWNLOADING FROM KAGGLE")
-        print("="*70)
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="  Processing"):
+        img_id = str(row.get("image_id", row.iloc[0]))
+        label = map_label(str(row.get("dx", row.get("label", ""))))
         
-        for dataset_id, name in KAGGLE_DATASETS:
-            try:
-                downloader = KaggleDownloader(output_dir, dataset_id, name)
-                images, labels, metadata = downloader.download()
-                all_images.extend(images)
-                all_labels.extend(labels)
-                all_metadata.extend(metadata)
-            except Exception as e:
-                print(f"Failed {dataset_id}: {e}")
+        if label is None:
+            continue
+        
+        # Find image
+        img_path = None
+        for img_dir in image_dirs:
+            for ext in [".jpg", ".jpeg", ".png", ""]:
+                for candidate in img_dir.glob(f"*{img_id}*{ext}"):
+                    if candidate.is_file() and candidate.suffix.lower() in ['.jpg', '.jpeg', '.png']:
+                        img_path = candidate
+                        break
+                if img_path:
+                    break
+            if img_path:
+                break
+        
+        if img_path is None:
+            continue
+        
+        images.append(str(img_path))
+        labels.append(label)
+        metadata.append({
+            "age": row.get("age"),
+            "sex": row.get("sex"),
+            "localization": row.get("localization"),
+        })
+    
+    print(f"  ✓ Processed {len(images)} images")
+    return images, labels, metadata
+
+
+def process_isic_2019(data_dir: Path) -> Tuple[List[str], List[str], List[dict]]:
+    """Process ISIC 2019 dataset."""
+    print("\n📊 Processing ISIC 2019...")
+    
+    # Find ground truth
+    csv_path = None
+    for pattern in ["*GroundTruth*.csv", "*Train*.csv", "*.csv"]:
+        matches = list(data_dir.rglob(pattern))
+        if matches:
+            csv_path = matches[0]
+            break
+    
+    if csv_path is None:
+        return process_folder_dataset(data_dir)
+    
+    df = pd.read_csv(csv_path)
+    
+    # ISIC 2019 uses one-hot encoding
+    class_cols = ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC"]
+    available_cols = [c for c in class_cols if c in df.columns]
+    
+    # Find images
+    img_dirs = list(data_dir.rglob("*Input*")) + list(data_dir.rglob("*image*")) + [data_dir]
+    
+    images, labels, metadata = [], [], []
+    
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="  Processing"):
+        img_name = str(row.get("image", row.iloc[0]))
+        
+        # Get label from one-hot
+        label = None
+        for col in available_cols:
+            if row.get(col, 0) == 1:
+                label = map_label(col)
+                break
+        
+        if label is None:
+            continue
+        
+        # Find image
+        img_path = None
+        for img_dir in img_dirs:
+            for ext in ["", ".jpg", ".jpeg", ".png"]:
+                candidate = img_dir / f"{img_name}{ext}"
+                if candidate.exists():
+                    img_path = candidate
+                    break
+            if img_path:
+                break
+        
+        if img_path is None:
+            continue
+        
+        images.append(str(img_path))
+        labels.append(label)
+        metadata.append({})
+    
+    print(f"  ✓ Processed {len(images)} images")
+    return images, labels, metadata
+
+
+def process_folder_dataset(data_dir: Path) -> Tuple[List[str], List[str], List[dict]]:
+    """Process dataset with folder-based class structure."""
+    print(f"\n📊 Processing folder dataset: {data_dir.name}")
+    
+    images, labels, metadata = [], [], []
+    
+    # Look for class folders
+    for subdir in data_dir.rglob("*"):
+        if not subdir.is_dir():
+            continue
+        
+        label = map_label(subdir.name)
+        if label is None:
+            continue
+        
+        for img_path in subdir.glob("*"):
+            if img_path.suffix.lower() in [".jpg", ".jpeg", ".png"]:
+                images.append(str(img_path))
+                labels.append(label)
+                metadata.append({})
+    
+    print(f"  ✓ Processed {len(images)} images")
+    return images, labels, metadata
+
+
+def process_generic_dataset(data_dir: Path) -> Tuple[List[str], List[str], List[dict]]:
+    """Process any dataset by finding CSV or folder structure."""
+    # Try CSV first
+    csv_files = list(data_dir.rglob("*.csv"))
+    
+    all_images, all_labels, all_metadata = [], [], []
+    
+    for csv_path in csv_files:
+        try:
+            df = pd.read_csv(csv_path)
+            
+            # Find columns
+            img_col = None
+            label_col = None
+            
+            for col in df.columns:
+                col_l = col.lower()
+                if any(x in col_l for x in ["image", "file", "name", "id", "path"]):
+                    img_col = col
+                if any(x in col_l for x in ["label", "class", "dx", "diagnosis", "target", "category"]):
+                    label_col = col
+            
+            if img_col is None or label_col is None:
+                continue
+            
+            for _, row in df.iterrows():
+                img_ref = str(row[img_col])
+                label = map_label(str(row[label_col]))
+                
+                if label is None:
+                    continue
+                
+                # Find image file
+                img_path = None
+                for candidate in data_dir.rglob(f"*{img_ref}*"):
+                    if candidate.is_file() and candidate.suffix.lower() in ['.jpg', '.jpeg', '.png']:
+                        img_path = candidate
+                        break
+                
+                if img_path:
+                    all_images.append(str(img_path))
+                    all_labels.append(label)
+                    all_metadata.append({})
+                    
+        except Exception:
+            continue
+    
+    # If no CSV worked, try folder structure
+    if not all_images:
+        return process_folder_dataset(data_dir)
     
     return all_images, all_labels, all_metadata
 
 
-def create_unified_dataset(
-    image_paths: List[str],
-    labels: List[str],
-    metadata: List[Dict],
-    output_dir: str,
-    copy_images: bool = False,
-) -> str:
-    """
-    Create a unified dataset with consistent format.
-    
-    Args:
-        image_paths: List of image file paths
-        labels: List of Tricorder-3 class labels
-        metadata: List of metadata dicts
-        output_dir: Output directory
-        copy_images: Whether to copy images to output dir
-    
-    Returns:
-        Path to the created labels.csv
-    """
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    
-    # Remove duplicates based on image hash
-    print("\nRemoving duplicates...")
-    unique_data = {}
-    
-    for img_path, label, meta in tqdm(zip(image_paths, labels, metadata), total=len(image_paths)):
-        try:
-            # Hash image content
-            with open(img_path, 'rb') as f:
-                img_hash = hashlib.md5(f.read()).hexdigest()
-            
-            if img_hash not in unique_data:
-                unique_data[img_hash] = (img_path, label, meta)
-        except:
-            continue
-    
-    print(f"Unique images: {len(unique_data)} (removed {len(image_paths) - len(unique_data)} duplicates)")
-    
-    # Create DataFrame
-    records = []
-    images_dir = output_path / "images"
-    images_dir.mkdir(exist_ok=True)
-    
-    for idx, (img_hash, (img_path, label, meta)) in enumerate(tqdm(unique_data.items(), desc="Creating dataset")):
-        # New filename
-        new_filename = f"img_{idx:06d}.jpg"
-        
-        if copy_images:
-            # Copy image
-            new_path = images_dir / new_filename
-            shutil.copy2(img_path, new_path)
-            img_path = str(new_path)
-        
-        record = {
-            'image': new_filename if copy_images else img_path,
-            'label': label,
-            'label_idx': TRICORDER_CLASSES.index(label),
-            'age': meta.get('age', ''),
-            'gender': meta.get('gender', ''),
-            'location': meta.get('location', ''),
-            'source_path': img_path,
-        }
-        records.append(record)
-    
-    df = pd.DataFrame(records)
-    
-    # Save CSV
-    csv_path = output_path / "labels.csv"
-    df.to_csv(csv_path, index=False)
-    
-    # Print statistics
-    print("\n" + "="*70)
-    print("DATASET STATISTICS")
-    print("="*70)
-    
-    print(f"\nTotal samples: {len(df)}")
-    print(f"\nClass distribution:")
-    
-    class_counts = df['label'].value_counts()
-    for label in TRICORDER_CLASSES:
-        count = class_counts.get(label, 0)
-        pct = count / len(df) * 100 if len(df) > 0 else 0
-        risk = "HIGH" if label in ["BCC", "MAL_OTH", "MEL", "SCCKA"] else \
-               "MEDIUM" if label in ["AKIEC", "BKL", "VASC"] else "BENIGN"
-        bar = "█" * int(pct / 2)
-        print(f"  {label:8} ({risk:6}): {count:6} ({pct:5.1f}%) {bar}")
-    
-    # Check for missing classes
-    missing = [c for c in TRICORDER_CLASSES if c not in class_counts.index]
-    if missing:
-        print(f"\n⚠️  WARNING: Missing classes: {missing}")
-        print("   These classes have no training data!")
-    
-    print(f"\nDataset saved to: {csv_path}")
-    
-    return str(csv_path)
-
-
-def create_synthetic_samples_for_missing_classes(
-    output_dir: str,
-    existing_df: pd.DataFrame,
-    samples_per_class: int = 100,
-) -> pd.DataFrame:
-    """
-    Create synthetic samples for classes with no data.
-    Uses data augmentation on similar classes.
-    """
-    from torchvision import transforms
-    
-    output_path = Path(output_dir)
-    images_dir = output_path / "images"
-    images_dir.mkdir(exist_ok=True)
-    
-    # Find missing classes
-    existing_classes = set(existing_df['label'].unique())
-    missing_classes = [c for c in TRICORDER_CLASSES if c not in existing_classes]
-    
-    if not missing_classes:
-        print("No missing classes - all 11 classes have data!")
-        return existing_df
-    
-    print(f"\nCreating synthetic data for missing classes: {missing_classes}")
-    
-    # Map missing classes to similar existing classes for augmentation
-    similar_classes = {
-        "BEN_OTH": ["DF", "NV", "BKL"],  # Other benign
-        "INF": ["BKL", "DF"],  # Inflammatory
-        "MAL_OTH": ["MEL", "BCC"],  # Other malignant
-        "SCCKA": ["BCC", "AKIEC"],  # SCC similar to BCC/AKIEC
-    }
-    
-    augment = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
-        transforms.RandomRotation(30),
-        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
-    ])
-    
-    new_records = []
-    
-    for missing_class in missing_classes:
-        source_classes = similar_classes.get(missing_class, ["NV"])
-        
-        # Get source images
-        source_df = existing_df[existing_df['label'].isin(source_classes)]
-        if len(source_df) == 0:
-            source_df = existing_df.sample(min(100, len(existing_df)))
-        
-        print(f"  Creating {samples_per_class} samples for {missing_class} from {source_classes}")
-        
-        for i in range(samples_per_class):
-            # Random source image
-            source_row = source_df.sample(1).iloc[0]
-            source_path = source_row['source_path'] if 'source_path' in source_row else source_row['image']
-            
-            try:
-                img = Image.open(source_path).convert('RGB')
-                
-                # Apply augmentation
-                img = augment(img)
-                
-                # Save
-                new_idx = len(existing_df) + len(new_records)
-                new_filename = f"synthetic_{missing_class}_{i:04d}.jpg"
-                new_path = images_dir / new_filename
-                img.save(new_path, 'JPEG', quality=90)
-                
-                new_records.append({
-                    'image': str(new_path),
-                    'label': missing_class,
-                    'label_idx': TRICORDER_CLASSES.index(missing_class),
-                    'age': source_row.get('age', ''),
-                    'gender': source_row.get('gender', ''),
-                    'location': source_row.get('location', ''),
-                    'source_path': str(new_path),
-                    'is_synthetic': True,
-                })
-            except Exception as e:
-                continue
-    
-    # Combine
-    new_df = pd.DataFrame(new_records)
-    combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-    
-    print(f"Added {len(new_records)} synthetic samples")
-    
-    return combined_df
-
+# ============================================================================
+# Dataset Balancing
+# ============================================================================
 
 def balance_dataset(
-    df: pd.DataFrame,
-    max_samples_per_class: int = 2000,
-    min_samples_per_class: int = 500,
-) -> pd.DataFrame:
-    """
-    Balance dataset by oversampling minority classes and undersampling majority.
-    """
-    print("\nBalancing dataset...")
+    images: List[str],
+    labels: List[str],
+    metadata: List[dict],
+    max_per_class: int = 3000,
+    min_per_class: int = 500,
+) -> Tuple[List[str], List[str], List[dict]]:
+    """Balance dataset by under/oversampling."""
+    print(f"\n⚖️ Balancing dataset (min={min_per_class}, max={max_per_class})...")
     
-    balanced_dfs = []
+    # Group by class
+    class_data = defaultdict(list)
+    for img, lbl, meta in zip(images, labels, metadata):
+        class_data[lbl].append((img, lbl, meta))
+    
+    balanced = []
     
     for label in TRICORDER_CLASSES:
-        class_df = df[df['label'] == label]
-        n_samples = len(class_df)
+        samples = class_data.get(label, [])
+        n = len(samples)
         
-        if n_samples == 0:
+        if n == 0:
+            print(f"  ⚠ {label:8}: 0 samples")
             continue
         
-        if n_samples > max_samples_per_class:
-            # Undersample
-            class_df = class_df.sample(max_samples_per_class, random_state=42)
-        elif n_samples < min_samples_per_class:
-            # Oversample
-            n_needed = min_samples_per_class - n_samples
-            oversampled = class_df.sample(n_needed, replace=True, random_state=42)
-            class_df = pd.concat([class_df, oversampled], ignore_index=True)
+        if n > max_per_class:
+            np.random.shuffle(samples)
+            samples = samples[:max_per_class]
+            print(f"  {label:8}: {n:5} → {max_per_class} (undersampled)")
+        elif n < min_per_class:
+            additional = min_per_class - n
+            oversampled = [samples[i % n] for i in range(additional)]
+            samples = samples + oversampled
+            print(f"  {label:8}: {n:5} → {len(samples)} (oversampled)")
+        else:
+            print(f"  {label:8}: {n:5}")
         
-        balanced_dfs.append(class_df)
+        balanced.extend(samples)
     
-    balanced_df = pd.concat(balanced_dfs, ignore_index=True)
-    balanced_df = balanced_df.sample(frac=1, random_state=42).reset_index(drop=True)  # Shuffle
+    np.random.shuffle(balanced)
     
-    print(f"Balanced dataset: {len(balanced_df)} samples")
-    
-    return balanced_df
+    if balanced:
+        images, labels, metadata = zip(*balanced)
+        return list(images), list(labels), list(metadata)
+    return [], [], []
 
 
 # ============================================================================
 # Main
 # ============================================================================
 
+def create_labels_csv(images, labels, metadata, output_path):
+    """Create final labels CSV."""
+    records = []
+    for img, lbl, meta in zip(images, labels, metadata):
+        records.append({
+            "image": img,
+            "label": lbl,
+            "label_idx": TRICORDER_CLASSES.index(lbl),
+            "age": meta.get("age", ""),
+            "sex": meta.get("sex", ""),
+            "localization": meta.get("localization", ""),
+        })
+    
+    df = pd.DataFrame(records)
+    df.to_csv(output_path, index=False)
+    
+    print(f"\n✓ Saved: {output_path}")
+    print(f"  Total: {len(df)} images")
+    print("\n  Class distribution:")
+    for label in TRICORDER_CLASSES:
+        count = len(df[df["label"] == label])
+        pct = count / len(df) * 100 if len(df) > 0 else 0
+        bar = "█" * int(pct / 2)
+        print(f"    {label:8}: {count:5} ({pct:5.1f}%) {bar}")
+
+
 def main():
+    config = load_config()
+    
     parser = argparse.ArgumentParser(
-        description="Download and prepare datasets for Tricorder-3 competition",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Download ALL available datasets for Tricorder-3",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     
-    parser.add_argument(
-        "--output-dir", type=str, default="training_data",
-        help="Output directory for prepared dataset"
-    )
-    parser.add_argument(
-        "--skip-kaggle", action="store_true",
-        help="Skip Kaggle downloads (if not configured)"
-    )
-    parser.add_argument(
-        "--skip-large", action="store_true",
-        help="Skip large datasets (>1GB)"
-    )
-    parser.add_argument(
-        "--copy-images", action="store_true",
-        help="Copy images to output directory (uses more disk space)"
-    )
-    parser.add_argument(
-        "--create-synthetic", action="store_true", default=True,
-        help="Create synthetic samples for missing classes"
-    )
-    parser.add_argument(
-        "--balance", action="store_true", default=True,
-        help="Balance the dataset"
-    )
-    parser.add_argument(
-        "--max-per-class", type=int, default=2000,
-        help="Maximum samples per class after balancing"
-    )
-    parser.add_argument(
-        "--min-per-class", type=int, default=500,
-        help="Minimum samples per class (oversample if needed)"
-    )
+    parser.add_argument("--output-dir", type=str,
+        default=get_config_value(config, "download", "output_dir", default="training_data"))
+    parser.add_argument("--source", choices=["kaggle", "huggingface", "direct", "all"],
+        default="all", help="Download from specific source")
+    parser.add_argument("--dataset", type=str, help="Download specific dataset by key")
+    parser.add_argument("--list", action="store_true", help="List all available datasets")
+    parser.add_argument("--max-per-class", type=int,
+        default=get_config_value(config, "download", "max_per_class", default=3000))
+    parser.add_argument("--min-per-class", type=int,
+        default=get_config_value(config, "download", "min_per_class", default=500))
+    parser.add_argument("--no-balance", action="store_true")
+    parser.add_argument("--all", action="store_true", help="Download ALL datasets")
     
     args = parser.parse_args()
     
-    print("="*70)
-    print("TRICORDER-3 DATASET PREPARATION")
-    print("="*70)
-    print(f"\nOutput directory: {args.output_dir}")
-    print(f"Target classes: {TRICORDER_CLASSES}")
-    
-    # Step 1: Download datasets
-    print("\n" + "="*70)
-    print("STEP 1: DOWNLOADING DATASETS")
-    print("="*70)
-    
-    images, labels, metadata = download_all_datasets(
-        args.output_dir,
-        skip_kaggle=args.skip_kaggle,
-        skip_large=args.skip_large,
-    )
-    
-    if len(images) == 0:
-        print("\n❌ No images downloaded. Please check your internet connection and try again.")
-        print("\nAlternative: Download manually from:")
-        print("  - Kaggle HAM10000: https://www.kaggle.com/kmader/skin-cancer-mnist-ham10000")
-        print("  - ISIC Archive: https://www.isic-archive.com/")
+    # List datasets
+    if args.list:
+        print("\n" + "="*70)
+        print("AVAILABLE DATASETS FOR TRICORDER-3")
+        print("="*70)
+        
+        print("\n📦 KAGGLE DATASETS:")
+        for key, info in KAGGLE_DATASETS.items():
+            print(f"  {key:20} - {info['name']:25} ({info.get('size', 'N/A')})")
+            print(f"  {'':20}   {info['description']}")
+        
+        print("\n📦 HUGGINGFACE DATASETS:")
+        for key, info in HUGGINGFACE_DATASETS.items():
+            print(f"  {key:20} - {info['name']}")
+            print(f"  {'':20}   {info['description']}")
+        
+        print("\n📦 DIRECT DOWNLOAD:")
+        for key, info in DIRECT_DOWNLOADS.items():
+            print(f"  {key:20} - {info['name']:25} ({info.get('size', 'N/A')})")
+            print(f"  {'':20}   {info['description']}")
+        
+        print("\n" + "="*70)
         return
     
-    # Step 2: Create unified dataset
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
     print("\n" + "="*70)
-    print("STEP 2: CREATING UNIFIED DATASET")
+    print("TRICORDER-3 DATASET DOWNLOAD")
     print("="*70)
+    print(f"Output: {output_dir}")
+    print(f"Source: {args.source}")
     
-    csv_path = create_unified_dataset(
-        images, labels, metadata,
-        args.output_dir,
-        copy_images=args.copy_images,
-    )
+    all_images, all_labels, all_metadata = [], [], []
     
-    # Load the created dataset
-    df = pd.read_csv(csv_path)
+    # Download Kaggle datasets
+    if args.source in ["kaggle", "all"]:
+        if check_kaggle_setup():
+            kaggle_config = get_config_value(config, "download", "kaggle", default={})
+            
+            for key, info in KAGGLE_DATASETS.items():
+                # Skip if not enabled in config (unless --all flag)
+                if not args.all and not kaggle_config.get(key, False):
+                    continue
+                
+                if args.dataset and args.dataset != key:
+                    continue
+                
+                dataset_dir = output_dir / f"kaggle_{key}"
+                
+                if not dataset_dir.exists() or not any(dataset_dir.iterdir()):
+                    download_kaggle_dataset(info["id"], dataset_dir)
+                else:
+                    print(f"\n⏭ {key} already exists, skipping download")
+                
+                # Process
+                if "ham10000" in key.lower() or "ham" in key.lower():
+                    imgs, lbls, meta = process_ham10000(dataset_dir)
+                elif "2019" in key:
+                    imgs, lbls, meta = process_isic_2019(dataset_dir)
+                else:
+                    imgs, lbls, meta = process_generic_dataset(dataset_dir)
+                
+                all_images.extend(imgs)
+                all_labels.extend(lbls)
+                all_metadata.extend(meta)
     
-    # Step 3: Handle missing classes
-    if args.create_synthetic:
-        print("\n" + "="*70)
-        print("STEP 3: HANDLING MISSING CLASSES")
-        print("="*70)
-        
-        df = create_synthetic_samples_for_missing_classes(
-            args.output_dir,
-            df,
-            samples_per_class=args.min_per_class,
+    # Download HuggingFace datasets
+    if args.source in ["huggingface", "all"]:
+        for key, info in HUGGINGFACE_DATASETS.items():
+            if args.dataset and args.dataset != key:
+                continue
+            
+            if not args.all:
+                continue  # Skip HF by default unless --all
+            
+            dataset_dir = output_dir / f"hf_{key}"
+            
+            if not dataset_dir.exists() or not any(dataset_dir.iterdir()):
+                download_huggingface_dataset(info["id"], dataset_dir)
+            
+            imgs, lbls, meta = process_generic_dataset(dataset_dir)
+            all_images.extend(imgs)
+            all_labels.extend(lbls)
+            all_metadata.extend(meta)
+    
+    # Download direct URLs
+    if args.source in ["direct", "all"]:
+        for key, info in DIRECT_DOWNLOADS.items():
+            if args.dataset and args.dataset != key:
+                continue
+            
+            if not args.all:
+                continue  # Skip direct by default unless --all
+            
+            dataset_dir = output_dir / f"direct_{key}"
+            dataset_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Download and extract
+            archive_name = info["url"].split("/")[-1].split("?")[0]
+            archive_path = dataset_dir / archive_name
+            
+            if not archive_path.exists():
+                download_url(info["url"], archive_path)
+                extract_archive(archive_path, dataset_dir)
+            
+            imgs, lbls, meta = process_folder_dataset(dataset_dir)
+            all_images.extend(imgs)
+            all_labels.extend(lbls)
+            all_metadata.extend(meta)
+    
+    if not all_images:
+        print("\n✗ No images found!")
+        print("  Try: python download_datasets.py --all")
+        return
+    
+    print(f"\n{'='*70}")
+    print(f"Total collected: {len(all_images)} images")
+    
+    # Remove duplicates
+    unique = {}
+    for img, lbl, meta in zip(all_images, all_labels, all_metadata):
+        if img not in unique:
+            unique[img] = (lbl, meta)
+    
+    all_images = list(unique.keys())
+    all_labels = [unique[i][0] for i in all_images]
+    all_metadata = [unique[i][1] for i in all_images]
+    
+    print(f"After deduplication: {len(all_images)} images")
+    
+    # Balance
+    if not args.no_balance:
+        all_images, all_labels, all_metadata = balance_dataset(
+            all_images, all_labels, all_metadata,
+            args.max_per_class, args.min_per_class,
         )
     
-    # Step 4: Balance dataset
-    if args.balance:
-        print("\n" + "="*70)
-        print("STEP 4: BALANCING DATASET")
-        print("="*70)
-        
-        df = balance_dataset(
-            df,
-            max_samples_per_class=args.max_per_class,
-            min_samples_per_class=args.min_per_class,
-        )
+    # Save
+    labels_path = output_dir / "labels_final.csv"
+    create_labels_csv(all_images, all_labels, all_metadata, labels_path)
     
-    # Save final dataset
-    final_csv = Path(args.output_dir) / "labels_final.csv"
-    df.to_csv(final_csv, index=False)
-    
-    print("\n" + "="*70)
-    print("FINAL DATASET READY")
-    print("="*70)
-    
-    print(f"\nDataset saved to: {final_csv}")
-    print(f"Total samples: {len(df)}")
-    
-    print("\nFinal class distribution:")
-    for label in TRICORDER_CLASSES:
-        count = len(df[df['label'] == label])
-        print(f"  {label:8}: {count:5}")
-    
-    print("\n" + "="*70)
-    print("NEXT STEPS")
-    print("="*70)
+    print(f"\n{'='*70}")
+    print("✓ DOWNLOAD COMPLETE")
+    print(f"{'='*70}")
     print(f"""
-To train your model, run:
+Next steps:
 
-    python custom_model/train.py \\
-        --data-dir {args.output_dir} \\
-        --labels-file {final_csv} \\
-        --epochs 50 \\
-        --batch-size 16 \\
-        --model-type balanced
+  1. Train your model:
+     python custom_model/train.py
 
-Or for more accuracy (longer training):
-
-    python custom_model/train.py \\
-        --data-dir {args.output_dir} \\
-        --labels-file {final_csv} \\
-        --epochs 100 \\
-        --batch-size 32 \\
-        --model-type balanced \\
-        --learning-rate 5e-4
+  2. Or with custom settings:
+     python custom_model/train.py --epochs 100 --batch-size 32
 """)
 
 

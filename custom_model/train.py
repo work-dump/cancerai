@@ -3,14 +3,21 @@
 Complete Training Script for Tricorder-3 Competition
 
 This script:
-1. Loads datasets from the competition_datasets folder
-2. Trains the model using competition-optimized strategies
-3. Evaluates using exact competition metrics
-4. Exports the best model to ONNX format
+1. Loads configuration from train_config.yaml
+2. Loads datasets from the specified folder
+3. Trains the model using competition-optimized strategies
+4. Evaluates using exact competition metrics
+5. Exports the best model to ONNX format
 
 Usage:
-    python custom_model/train.py --data-dir competition_datasets/tricorder-3-mainnet/extracted
-    python custom_model/train.py --data-dir /path/to/your/data --epochs 100
+    # Use config file (recommended)
+    python custom_model/train.py
+    
+    # Override specific settings
+    python custom_model/train.py --epochs 100 --batch-size 32
+    
+    # Use different config file
+    python custom_model/train.py --config my_config.yaml
 """
 
 import os
@@ -27,6 +34,57 @@ from sklearn.model_selection import train_test_split
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# ============================================================================
+# Configuration Loading
+# ============================================================================
+
+def load_config(config_path: str = None) -> Dict[str, Any]:
+    """
+    Load configuration from YAML file.
+    
+    Args:
+        config_path: Path to config file. If None, uses default train_config.yaml
+    
+    Returns:
+        Configuration dictionary
+    """
+    if config_path is None:
+        # Default config path (same directory as this script)
+        config_path = Path(__file__).parent / "train_config.yaml"
+    else:
+        config_path = Path(config_path)
+    
+    if not config_path.exists():
+        print(f"Config file not found: {config_path}")
+        print("Using default values.")
+        return {}
+    
+    try:
+        import yaml
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        print(f"Loaded config from: {config_path}")
+        return config or {}
+    except ImportError:
+        print("PyYAML not installed. Install with: pip install pyyaml")
+        print("Using default values.")
+        return {}
+    except Exception as e:
+        print(f"Error loading config: {e}")
+        print("Using default values.")
+        return {}
+
+
+def get_config_value(config: Dict, *keys, default=None):
+    """Get nested config value safely."""
+    value = config
+    for key in keys:
+        if isinstance(value, dict) and key in value:
+            value = value[key]
+        else:
+            return default
+    return value if value is not None else default
 
 from custom_model import (
     # Model
@@ -501,88 +559,126 @@ def train(args):
 # ============================================================================
 
 def parse_args():
+    # First, parse just the --config argument to load config file
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--config", type=str, default=None, help="Path to config YAML file")
+    pre_args, _ = pre_parser.parse_known_args()
+    
+    # Load configuration
+    config = load_config(pre_args.config)
+    
+    # Main parser with config-based defaults
     parser = argparse.ArgumentParser(
         description="Train Tricorder-3 Competition Model",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     
+    # Config file
+    parser.add_argument(
+        "--config", type=str, default=None,
+        help="Path to config YAML file (default: custom_model/train_config.yaml)"
+    )
+    
     # Data
     parser.add_argument(
         "--data-dir", type=str, 
-        default="competition_datasets/tricorder-3-mainnet/extracted",
+        default=get_config_value(config, 'data', 'data_dir', default="training_data"),
         help="Path to dataset directory"
     )
     parser.add_argument(
-        "--labels-file", type=str, default=None,
+        "--labels-file", type=str, 
+        default=get_config_value(config, 'data', 'labels_file', default=None),
         help="Path to labels CSV file (auto-detected if not specified)"
     )
     parser.add_argument(
-        "--val-split", type=float, default=0.2,
+        "--val-split", type=float, 
+        default=get_config_value(config, 'data', 'val_split', default=0.2),
         help="Validation split ratio"
     )
     
     # Synthetic data (for testing)
     parser.add_argument(
         "--synthetic", action="store_true",
+        default=get_config_value(config, 'synthetic', 'enabled', default=False),
         help="Use synthetic data for testing"
     )
     parser.add_argument(
-        "--synthetic-samples", type=int, default=500,
+        "--synthetic-samples", type=int, 
+        default=get_config_value(config, 'synthetic', 'num_samples', default=500),
         help="Number of synthetic samples to create"
     )
     parser.add_argument(
-        "--synthetic-dir", type=str, default="synthetic_data",
+        "--synthetic-dir", type=str, 
+        default=get_config_value(config, 'synthetic', 'output_dir', default="synthetic_data"),
         help="Directory for synthetic data"
     )
     
     # Model
     parser.add_argument(
-        "--model-type", type=str, default="balanced",
+        "--model-type", type=str, 
+        default=get_config_value(config, 'model', 'type', default="balanced"),
         choices=["lightweight", "balanced", "larger"],
         help="Model type to use"
     )
     
     # Training
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=0.01)
-    parser.add_argument("--dropout", type=float, default=0.4)
-    parser.add_argument("--patience", type=int, default=10)
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--epochs", type=int, 
+        default=get_config_value(config, 'training', 'epochs', default=50))
+    parser.add_argument("--batch-size", type=int, 
+        default=get_config_value(config, 'training', 'batch_size', default=16))
+    parser.add_argument("--learning-rate", type=float, 
+        default=get_config_value(config, 'training', 'learning_rate', default=1e-3))
+    parser.add_argument("--weight-decay", type=float, 
+        default=get_config_value(config, 'training', 'weight_decay', default=0.01))
+    parser.add_argument("--dropout", type=float, 
+        default=get_config_value(config, 'training', 'dropout', default=0.4))
+    parser.add_argument("--patience", type=int, 
+        default=get_config_value(config, 'training', 'patience', default=10))
+    parser.add_argument("--num-workers", type=int, 
+        default=get_config_value(config, 'training', 'num_workers', default=4))
     
     # Augmentation
-    parser.add_argument("--use-mixup", action="store_true", default=True)
+    parser.add_argument("--use-mixup", action="store_true", 
+        default=get_config_value(config, 'augmentation', 'use_mixup', default=True))
     parser.add_argument("--no-mixup", dest="use_mixup", action="store_false")
-    parser.add_argument("--mixup-alpha", type=float, default=0.4)
-    parser.add_argument("--label-smoothing", type=float, default=0.1)
-    parser.add_argument("--weighted-sampling", action="store_true", default=True)
+    parser.add_argument("--mixup-alpha", type=float, 
+        default=get_config_value(config, 'augmentation', 'mixup_alpha', default=0.4))
+    parser.add_argument("--label-smoothing", type=float, 
+        default=get_config_value(config, 'augmentation', 'label_smoothing', default=0.1))
+    parser.add_argument("--weighted-sampling", action="store_true", 
+        default=get_config_value(config, 'augmentation', 'weighted_sampling', default=True))
     parser.add_argument("--no-weighted-sampling", dest="weighted_sampling", action="store_false")
     
     # Output
-    parser.add_argument("--save-dir", type=str, default="checkpoints")
-    parser.add_argument(
-        "--save-every", type=int, default=5,
-        help="Save checkpoint every N epochs (0 = only save best)"
-    )
-    parser.add_argument("--export-onnx", action="store_true", default=True)
+    parser.add_argument("--save-dir", type=str, 
+        default=get_config_value(config, 'checkpoints', 'save_dir', default="checkpoints"))
+    parser.add_argument("--save-every", type=int, 
+        default=get_config_value(config, 'checkpoints', 'save_every', default=5),
+        help="Save checkpoint every N epochs (0 = only save best)")
+    parser.add_argument("--export-onnx", action="store_true", 
+        default=get_config_value(config, 'checkpoints', 'export_onnx', default=True))
     parser.add_argument("--no-export-onnx", dest="export_onnx", action="store_false")
     
     # Resume training
-    parser.add_argument(
-        "--resume", type=str, default=None,
-        help="Path to checkpoint to resume training from (e.g., checkpoints/latest.pt)"
-    )
+    parser.add_argument("--resume", type=str, 
+        default=get_config_value(config, 'checkpoints', 'resume', default=None),
+        help="Path to checkpoint to resume training from (e.g., checkpoints/latest.pt)")
     
     # TensorBoard
-    parser.add_argument("--tensorboard", action="store_true", default=True)
+    parser.add_argument("--tensorboard", action="store_true", 
+        default=get_config_value(config, 'logging', 'tensorboard', default=True))
     parser.add_argument("--no-tensorboard", dest="tensorboard", action="store_false")
-    parser.add_argument("--tensorboard-dir", type=str, default="runs")
+    parser.add_argument("--tensorboard-dir", type=str, 
+        default=get_config_value(config, 'logging', 'tensorboard_dir', default="runs"))
     
     # Other
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, 
+        default=get_config_value(config, 'training', 'seed', default=42))
     
-    return parser.parse_args()
+    # Store config for later use (e.g., weights_only setting)
+    args = parser.parse_args()
+    args._config = config
+    return args
 
 
 if __name__ == "__main__":
