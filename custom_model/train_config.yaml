@@ -74,15 +74,25 @@ pytorch:
 # ----------------------------------------------------------------------------
 # Used by: python custom_model/download_datasets.py
 # 
+# RECOMMENDED: Start with ISIC MILK10k - it has ALL 11 classes!
+#   python custom_model/download_datasets.py --source isic
+#
 # To download ALL datasets: python custom_model/download_datasets.py --all
 download:
   output_dir: "training_data"                  # Where to save downloaded datasets
   
+  # ⭐ ISIC MILK10k - THE RECOMMENDED DATASET! ⭐
+  # Has all 11 Tricorder-3 classes including BEN_OTH, INF, MAL_OTH!
+  # Download from: https://challenge.isic-archive.com/landing/milk10k/
+  isic:
+    milk10k: true                              # 5,240 lesions - ALL 11 CLASSES!
+  
   # Kaggle datasets (requires Kaggle API setup)
+  # These can supplement MILK10k with more data for common classes
   kaggle:
-    ham10000: true                             # 10,015 images, 7 classes - ESSENTIAL
-    isic_2019: true                            # 25,331 images, 8 classes - Recommended
-    isic_2020: true                            # 33,126 images, melanoma detection
+    ham10000: true                             # 10,015 images, 7 classes
+    isic_2019: true                            # 25,331 images, 8 classes
+    isic_2020: false                           # 33,126 images, melanoma only
     skin_cancer_9class: false                  # 9-class extended dataset
     dermnet: false                             # 23,000 images, 23 classes
     isic_2018: false                           # ISIC 2018 challenge

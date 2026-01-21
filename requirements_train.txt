@@ -47,6 +47,7 @@ Pillow>=10.0.0
 # ============================================================================
 # Dataset Download
 # ============================================================================
+isicarchive                     # ISIC Archive API (for MILK10k - RECOMMENDED!)
 kaggle                          # Kaggle API for dataset download
 datasets                        # HuggingFace datasets library
 huggingface-hub>=0.16.0        # HuggingFace model/dataset hub

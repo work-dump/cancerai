@@ -573,21 +573,30 @@ class SkinLesionDataset(Dataset):
         return np.array([age, gender, location], dtype=np.float32)
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, int]:
-        # Load image
-        image = Image.open(self.image_paths[idx]).convert('RGB')
-        
-        # Apply transforms
-        if self.transform:
-            image = self.transform(image)
-        
-        # Encode demographics
-        demographics = self._encode_demographics(self.metadata[idx])
-        demographics = torch.from_numpy(demographics)
-        
-        # Label
-        label = self.labels[idx]
-        
-        return image, demographics, label
+        try:
+            # Load image
+            image = Image.open(self.image_paths[idx]).convert('RGB')
+            
+            # Apply transforms
+            if self.transform:
+                image = self.transform(image)
+            
+            # Encode demographics
+            demographics = self._encode_demographics(self.metadata[idx])
+            demographics = torch.from_numpy(demographics)
+            
+            # Label
+            label = self.labels[idx]
+            
+            return image, demographics, label
+            
+        except Exception as e:
+            # Handle corrupt/missing images by returning a placeholder
+            print(f"Warning: Could not load image {self.image_paths[idx]}: {e}")
+            # Return a black image with same label (will be learned as noise)
+            placeholder = torch.zeros(3, 512, 512)
+            demographics = torch.tensor([50.0, -1.0, 0.0])  # Default demographics
+            return placeholder, demographics, self.labels[idx]
 
 
 def create_weighted_sampler(

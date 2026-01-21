@@ -114,87 +114,118 @@ chmod 600 ~/.kaggle/kaggle.json
 pip install kaggle
 ```
 
-### Step 2: Configure Datasets
+### Step 2: Download MILK10k (RECOMMENDED - Has All 11 Classes!)
 
-Edit `train_config.yaml`:
+**MILK10k is the ONLY dataset with all 11 Tricorder-3 classes!**
+
+1. **Go to ISIC Challenge website:**
+   https://challenge.isic-archive.com/landing/milk10k/
+
+2. **Create a free ISIC account** (if you don't have one)
+
+3. **Click "Download Data"** and download:
+   - MILK10k Training Images (~8 GB)
+   - MILK10k Training Metadata (CSV)
+   - MILK10k Supplemental Data (optional)
+
+4. **Extract to `training_data/isic_milk10k/`:**
+   ```
+   training_data/
+   └── isic_milk10k/
+       ├── images/
+       │   ├── ISIC_xxxxxxx.jpg
+       │   └── ...
+       └── metadata.csv
+   ```
+
+5. **Process the dataset:**
+   ```bash
+   python custom_model/download_datasets.py --source isic
+   ```
+
+### Step 3: (Optional) Add More Data from Kaggle
+
+Edit `train_config.yaml` to enable additional datasets:
 
 ```yaml
 download:
   output_dir: "training_data"
   
+  # MILK10k - already downloaded manually
+  isic:
+    milk10k: true
+  
+  # Kaggle - supplement with more data for common classes
   kaggle:
-    ham10000: true          # 10,015 images - Essential!
-    isic_2019: true         # 25,331 images - Recommended
-    isic_2020: true         # 33,126 images - More melanoma data
-    skin_cancer_9class: true # 9-class extended dataset
-    dermnet: false          # Large dataset (optional)
+    ham10000: true          # 10,015 images, 7 classes
+    isic_2019: true         # 25,331 images, 8 classes
+    isic_2020: false        # Melanoma only
+    dermnet: false          # Large, 23 classes
   
   balance_dataset: true
   max_per_class: 3000
   min_per_class: 500
 ```
 
-### Step 3: Download Datasets
+Then download:
 
 ```bash
-python custom_model/download_datasets.py
+python custom_model/download_datasets.py --source kaggle
 ```
 
-Or download specific dataset:
+### Step 4: Verify Dataset
 
 ```bash
-python custom_model/download_datasets.py --dataset ham10000
-```
-
-List available datasets:
-
-```bash
+# List all available datasets
 python custom_model/download_datasets.py --list
+
+# Check what was downloaded
+ls -la training_data/
 ```
 
 ### Available Datasets
 
 **Total potential: 100,000+ images from multiple sources**
 
-#### Kaggle Datasets (requires API setup)
+#### ⭐ ISIC MILK10k - THE RECOMMENDED DATASET ⭐
 
 | Key | Dataset | Images | Description |
 |-----|---------|--------|-------------|
-| `ham10000` | HAM10000 | 10,015 | **Essential** - 7 classes, primary dataset |
-| `isic_2019` | ISIC 2019 | 25,331 | 8 diagnostic categories |
-| `isic_2020` | ISIC 2020 | 33,126 | Melanoma detection |
-| `isic_2018` | ISIC 2018 | ~10,000 | Challenge dataset |
-| `skin_cancer_9class` | 9-Class | ~11,000 | Extended classification |
-| `dermnet` | DermNet | ~23,000 | 23 disease classes |
+| `milk10k` | **MILK10k** | 10,480 | **ALL 11 CLASSES!** Including BEN_OTH, INF, MAL_OTH |
 
-#### HuggingFace Datasets (no API needed)
+**This is the ONLY dataset with all 11 Tricorder-3 classes!**
+- Download from: https://challenge.isic-archive.com/landing/milk10k/
+- 5,240 lesions (clinical + dermoscopic pairs)
+- Includes metadata: age, sex, skin tone, anatomical site
+- License: CC-BY-NC
+
+#### Kaggle Datasets (to supplement MILK10k)
+
+| Key | Dataset | Images | Classes | Description |
+|-----|---------|--------|---------|-------------|
+| `ham10000` | HAM10000 | 10,015 | 7 | Primary dataset |
+| `isic_2019` | ISIC 2019 | 25,331 | 8 | ISIC Challenge 2019 |
+| `isic_2020` | ISIC 2020 | 33,126 | 2 | Melanoma detection |
+| `dermnet` | DermNet | ~23,000 | 23 | Includes inflammatory |
+
+#### HuggingFace & Direct Downloads
 
 | Key | Dataset | Description |
 |-----|---------|-------------|
-| `marmal88_skin` | Skin Cancer | Classification dataset |
-| `isic_hf` | ISIC (HF) | ISIC on HuggingFace |
-
-#### Direct Downloads
-
-| Key | Dataset | Images | Description |
-|-----|---------|--------|-------------|
-| `ph2` | PH2 | 200 | Melanoma, atypical/common nevi |
+| `marmal88_skin` | Skin Cancer (HF) | Classification dataset |
+| `ph2` | PH2 | 200 images, melanoma/nevi |
 
 ### Download Commands
 
 ```bash
-# Download enabled datasets from config
-python custom_model/download_datasets.py
+# ⭐ RECOMMENDED: Start with ISIC MILK10k
+python custom_model/download_datasets.py --source isic
+
+# Then add Kaggle data for more samples
+python custom_model/download_datasets.py --source kaggle
 
 # Download ALL available datasets
 python custom_model/download_datasets.py --all
-
-# Download from specific source
-python custom_model/download_datasets.py --source kaggle
-python custom_model/download_datasets.py --source huggingface
-
-# Download specific dataset
-python custom_model/download_datasets.py --dataset ham10000
 
 # List all available datasets
 python custom_model/download_datasets.py --list
@@ -252,10 +283,18 @@ All settings are in `custom_model/train_config.yaml`:
 # Dataset Download Settings
 download:
   output_dir: "training_data"
-  skip_kaggle: false
-  create_synthetic: true
+  
+  # ISIC MILK10k - RECOMMENDED (has all 11 classes!)
+  isic:
+    milk10k: true
+  
+  # Kaggle datasets (supplement MILK10k)
+  kaggle:
+    ham10000: true
+    isic_2019: true
+  
   balance_dataset: true
-  max_per_class: 2000
+  max_per_class: 3000
   min_per_class: 500
 
 # Training Data Settings

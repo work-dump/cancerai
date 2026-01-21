@@ -3,16 +3,18 @@
 Dataset Download Script for Tricorder-3 Competition
 
 Downloads skin lesion datasets from multiple sources:
+- ISIC MILK10k (RECOMMENDED - exact 11-class match for Tricorder-3!)
 - Kaggle (HAM10000, ISIC 2019, ISIC 2020, etc.)
 - HuggingFace (skin cancer datasets)
 - Direct URLs (PH2, BCN20000, etc.)
-- ISIC Archive
+- ISIC Archive API
 
 Total potential data: 500,000+ images
 
 Usage:
     python custom_model/download_datasets.py              # Download all enabled
     python custom_model/download_datasets.py --all        # Download everything
+    python custom_model/download_datasets.py --source isic # ISIC MILK10k (recommended)
     python custom_model/download_datasets.py --source kaggle  # Kaggle only
     python custom_model/download_datasets.py --list       # List all datasets
 """
@@ -180,6 +182,23 @@ DIRECT_DOWNLOADS = {
         "name": "PH2 Dataset",
         "description": "200 dermoscopic images (40 melanoma, 80 atypical nevi, 80 common nevi)",
         "size": "~425 MB",
+    },
+}
+
+# ============================================================================
+# ISIC MILK10k - THE RECOMMENDED DATASET FOR TRICORDER-3
+# ============================================================================
+# This dataset has EXACTLY the same 11 classes as Tricorder-3!
+# It includes BEN_OTH, INF, MAL_OTH which are missing from other datasets.
+
+ISIC_DATASETS = {
+    "milk10k": {
+        "name": "MILK10k",
+        "description": "5,240 lesions (10,480 images) - EXACT 11-class match for Tricorder-3!",
+        "size": "~8 GB",
+        "classes": 11,
+        "recommended": True,
+        "has_all_classes": True,  # Includes BEN_OTH, INF, MAL_OTH!
     },
 }
 
@@ -398,6 +417,333 @@ def extract_archive(archive_path: Path, output_dir: Path) -> bool:
     except Exception as e:
         print(f"  ✗ Extraction failed: {e}")
         return False
+
+
+def download_isic_milk10k(output_dir: Path) -> bool:
+    """
+    Download/prepare ISIC MILK10k dataset - THE RECOMMENDED DATASET FOR TRICORDER-3!
+    
+    This dataset has exactly 11 classes matching Tricorder-3:
+    AKIEC, BCC, BEN_OTH, BKL, DF, INF, MAL_OTH, MEL, NV, SCCKA, VASC
+    
+    It includes the "missing" classes: BEN_OTH, INF, MAL_OTH!
+    
+    Expected structure after manual download from ISIC:
+    - MILK10k_Training_Input.zip (images)
+    - MILK10k_Training_GroundTruth.csv (one-hot labels)
+    - MILK10k_Training_Metadata.csv (image info + demographics)
+    - MILK10k_Training_Supplement.csv (additional metadata)
+    """
+    print("\n" + "="*70)
+    print("📥 PREPARING ISIC MILK10k - THE RECOMMENDED DATASET!")
+    print("   This dataset has ALL 11 Tricorder-3 classes including:")
+    print("   - BEN_OTH (Other benign)")
+    print("   - INF (Inflammatory/infectious)")
+    print("   - MAL_OTH (Other malignant)")
+    print("="*70)
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Check for required files
+    ground_truth = output_dir / "MILK10k_Training_GroundTruth.csv"
+    metadata = output_dir / "MILK10k_Training_Metadata.csv"
+    training_zip = output_dir / "MILK10k_Training_Input.zip"
+    images_dir = output_dir / "images"
+    
+    # Check if CSV files exist
+    if not ground_truth.exists() or not metadata.exists():
+        print("\n⚠ MILK10k CSV files not found!")
+        print("\n" + "-"*70)
+        print("📋 MANUAL DOWNLOAD INSTRUCTIONS FOR MILK10k:")
+        print("-"*70)
+        print(f"""
+1. Go to: https://challenge.isic-archive.com/landing/milk10k/
+
+2. Click "Download Data" button
+
+3. You may need to create an ISIC account (free)
+
+4. Download ALL these files to: {output_dir}
+   - MILK10k_Training_Input.zip (~330 MB - the images!)
+   - MILK10k_Training_GroundTruth.csv (labels)
+   - MILK10k_Training_Metadata.csv (image info)
+   - MILK10k_Training_Supplement.csv (extra metadata)
+
+5. Run this script again to extract and process.
+""")
+        print("-"*70)
+        return False
+    
+    print(f"  ✓ Found ground truth: {ground_truth.name}")
+    print(f"  ✓ Found metadata: {metadata.name}")
+    
+    # Extract zip file if needed
+    if training_zip.exists() and not images_dir.exists():
+        print(f"\n📦 Extracting {training_zip.name}...")
+        try:
+            with zipfile.ZipFile(training_zip, 'r') as z:
+                z.extractall(output_dir)
+            print(f"  ✓ Extracted images")
+        except Exception as e:
+            print(f"  ✗ Failed to extract: {e}")
+            return False
+    
+    # Find where images were extracted
+    # They might be in a subdirectory or directly in output_dir
+    image_locations = [
+        output_dir / "images",
+        output_dir / "MILK10k_Training_Input",
+        output_dir,
+    ]
+    
+    images_found = []
+    for loc in image_locations:
+        if loc.exists():
+            images_found.extend(list(loc.glob("*.jpg")))
+            images_found.extend(list(loc.glob("*.png")))
+            images_found.extend(list(loc.glob("**/*.jpg")))
+            images_found.extend(list(loc.glob("**/*.png")))
+    
+    # Deduplicate
+    images_found = list(set(images_found))
+    
+    if images_found:
+        print(f"  ✓ Found {len(images_found)} images")
+        return True
+    elif training_zip.exists():
+        print(f"\n⚠ Zip file exists but no images found after extraction.")
+        print(f"  Please manually extract {training_zip} to {output_dir}")
+        return False
+    else:
+        print(f"\n⚠ No images found and no zip file to extract.")
+        print(f"  Please download MILK10k_Training_Input.zip from ISIC website.")
+        return False
+
+
+def process_milk10k(data_dir: Path) -> Tuple[List[str], List[str], List[dict]]:
+    """
+    Process ISIC MILK10k dataset.
+    
+    MILK10k has the exact 11 classes needed for Tricorder-3!
+    
+    MILK10k file structure:
+    - MILK10k_Training_GroundTruth.csv: lesion_id + one-hot encoded labels
+    - MILK10k_Training_Metadata.csv: lesion_id, image_type, isic_id, demographics
+    - MILK10k_Training_Supplement.csv: additional metadata
+    - images/ or extracted from MILK10k_Training_Input.zip
+    
+    Each lesion has 2 images: clinical close-up + dermoscopic
+    We prefer dermoscopic images for training (better for diagnosis)
+    """
+    print("\n📊 Processing MILK10k (11-class dataset)...")
+    
+    # Look for the specific MILK10k files
+    ground_truth_path = data_dir / "MILK10k_Training_GroundTruth.csv"
+    metadata_path = data_dir / "MILK10k_Training_Metadata.csv"
+    supplement_path = data_dir / "MILK10k_Training_Supplement.csv"
+    
+    # Check if MILK10k specific files exist
+    if ground_truth_path.exists() and metadata_path.exists():
+        print("  ✓ Found MILK10k specific files")
+        return _process_milk10k_specific(data_dir, ground_truth_path, metadata_path, supplement_path)
+    
+    # Fallback to generic processing
+    print("  ⚠ MILK10k specific files not found, trying generic processing...")
+    return _process_milk10k_generic(data_dir)
+
+
+def _process_milk10k_specific(
+    data_dir: Path, 
+    ground_truth_path: Path, 
+    metadata_path: Path,
+    supplement_path: Path,
+) -> Tuple[List[str], List[str], List[dict]]:
+    """
+    Process MILK10k with the specific file format from ISIC.
+    
+    Ground truth format:
+    lesion_id,AKIEC,BCC,BEN_OTH,BKL,DF,INF,MAL_OTH,MEL,NV,SCCKA,VASC
+    IL_0000652,0.0,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+    
+    Metadata format:
+    lesion_id,image_type,isic_id,attribution,copyright_license,image_manipulation,age_approx,sex,skin_tone_class,site,...
+    IL_0000652,clinical: close-up,ISIC_8149219,...
+    IL_0000652,dermoscopic,ISIC_4671410,...
+    """
+    # Load ground truth (labels)
+    gt_df = pd.read_csv(ground_truth_path)
+    print(f"  Ground truth: {len(gt_df)} lesions")
+    
+    # Load metadata (image info + demographics)
+    meta_df = pd.read_csv(metadata_path)
+    print(f"  Metadata: {len(meta_df)} image entries")
+    
+    # Load supplement if available
+    supp_df = None
+    if supplement_path.exists():
+        supp_df = pd.read_csv(supplement_path)
+        print(f"  Supplement: {len(supp_df)} entries")
+    
+    # Find all images in the directory (check multiple locations)
+    # MILK10k structure: MILK10k_Training_Input/IL_xxxxxxx/ISIC_xxxxxxx.jpg
+    all_images = {}
+    search_dirs = [
+        data_dir,
+        data_dir / "images",
+        data_dir / "MILK10k_Training_Input",
+    ]
+    
+    for search_dir in search_dirs:
+        if search_dir.exists():
+            for ext in ["*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG"]:
+                for img_path in search_dir.rglob(ext):
+                    img_id = img_path.stem  # e.g., ISIC_8149219
+                    all_images[img_id] = img_path
+                    # Also map without ISIC_ prefix
+                    if img_id.startswith("ISIC_"):
+                        all_images[img_id[5:]] = img_path
+    
+    print(f"  Found {len(all_images)} unique images in directory")
+    
+    if len(all_images) == 0:
+        print("  ✗ No images found! Please extract MILK10k_Training_Input.zip")
+        return [], [], []
+    
+    # Create lesion_id -> label mapping from ground truth
+    lesion_labels = {}
+    for _, row in gt_df.iterrows():
+        lesion_id = row['lesion_id']
+        # Find which class has value 1.0
+        label = None
+        for cls in TRICORDER_CLASSES:
+            if row.get(cls, 0) == 1.0:
+                label = cls
+                break
+        if label:
+            lesion_labels[lesion_id] = label
+    
+    print(f"  Mapped {len(lesion_labels)} lesions to labels")
+    
+    # Process metadata to get image paths and demographics
+    # Use ALL images (both clinical and dermoscopic) for maximum training data
+    images, labels, metadata_list = [], [], []
+    class_counts = defaultdict(int)
+    image_type_counts = defaultdict(int)
+    not_found = 0
+    
+    for _, row in tqdm(meta_df.iterrows(), total=len(meta_df), desc="  Processing"):
+        lesion_id = row.get('lesion_id', '')
+        
+        # Get label for this lesion
+        label = lesion_labels.get(lesion_id)
+        if label is None:
+            continue
+        
+        isic_id = row.get('isic_id', '')
+        
+        # Find image
+        img_path = all_images.get(isic_id)
+        if img_path is None:
+            not_found += 1
+            continue
+        
+        images.append(str(img_path))
+        labels.append(label)
+        
+        # Extract metadata
+        image_type = row.get("image_type", "")
+        meta = {
+            "age": row.get("age_approx", ""),
+            "sex": row.get("sex", ""),
+            "localization": row.get("site", row.get("anatom_site", "")),
+            "skin_tone": row.get("skin_tone_class", ""),
+            "image_type": image_type,
+        }
+        metadata_list.append(meta)
+        class_counts[label] += 1
+        
+        # Track image types
+        if 'dermoscop' in str(image_type).lower():
+            image_type_counts['dermoscopic'] += 1
+        elif 'clinical' in str(image_type).lower():
+            image_type_counts['clinical'] += 1
+        else:
+            image_type_counts['other'] += 1
+    
+    print(f"\n  ✓ Processed {len(images)} images from {len(lesion_labels)} lesions")
+    print(f"    - Dermoscopic: {image_type_counts.get('dermoscopic', 0)}")
+    print(f"    - Clinical: {image_type_counts.get('clinical', 0)}")
+    if not_found > 0:
+        print(f"  ⚠ {not_found} entries had no matching image file")
+    
+    # Print class distribution
+    print("\n  Class distribution (MILK10k):")
+    total = sum(class_counts.values())
+    for cls in TRICORDER_CLASSES:
+        count = class_counts.get(cls, 0)
+        pct = count / total * 100 if total > 0 else 0
+        bar = "█" * min(int(pct * 2), 40)
+        status = "✓" if count > 0 else "⚠ MISSING"
+        print(f"    {status} {cls:8}: {count:5} ({pct:5.1f}%) {bar}")
+    
+    return images, labels, metadata_list
+
+
+def _process_milk10k_generic(data_dir: Path) -> Tuple[List[str], List[str], List[dict]]:
+    """Fallback generic processing for MILK10k or similar datasets."""
+    # Find any CSV
+    csv_files = list(data_dir.rglob("*.csv"))
+    if not csv_files:
+        print("  ✗ No CSV files found")
+        return [], [], []
+    
+    # Sort by size (prefer larger files)
+    csv_files.sort(key=lambda x: x.stat().st_size, reverse=True)
+    csv_path = csv_files[0]
+    
+    df = pd.read_csv(csv_path)
+    print(f"  Found {len(df)} entries in {csv_path.name}")
+    print(f"  Columns: {list(df.columns)[:10]}...")
+    
+    # Check for one-hot encoded columns
+    if all(cls in df.columns for cls in TRICORDER_CLASSES):
+        print("  Found one-hot encoded labels")
+        # Process as one-hot
+        images, labels, metadata_list = [], [], []
+        
+        # Find all images
+        all_images = {}
+        for ext in ["*.jpg", "*.jpeg", "*.png"]:
+            for img_path in data_dir.rglob(ext):
+                all_images[img_path.stem] = img_path
+        
+        id_col = 'lesion_id' if 'lesion_id' in df.columns else df.columns[0]
+        
+        for _, row in tqdm(df.iterrows(), total=len(df), desc="  Processing"):
+            # Get label from one-hot
+            label = None
+            for cls in TRICORDER_CLASSES:
+                if row.get(cls, 0) == 1.0:
+                    label = cls
+                    break
+            if label is None:
+                continue
+            
+            # Find image
+            entry_id = str(row.get(id_col, ""))
+            img_path = all_images.get(entry_id)
+            if img_path is None:
+                continue
+            
+            images.append(str(img_path))
+            labels.append(label)
+            metadata_list.append({})
+        
+        print(f"  ✓ Processed {len(images)} images")
+        return images, labels, metadata_list
+    
+    print("  ✗ Could not determine label format")
+    return [], [], []
 
 
 # ============================================================================
@@ -690,12 +1036,19 @@ def main():
     parser = argparse.ArgumentParser(
         description="Download ALL available datasets for Tricorder-3",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+RECOMMENDED: Start with ISIC MILK10k - it has all 11 classes!
+  python download_datasets.py --source isic
+
+Then add more data from Kaggle:
+  python download_datasets.py --source kaggle --all
+        """,
     )
     
     parser.add_argument("--output-dir", type=str,
         default=get_config_value(config, "download", "output_dir", default="training_data"))
-    parser.add_argument("--source", choices=["kaggle", "huggingface", "direct", "all"],
-        default="all", help="Download from specific source")
+    parser.add_argument("--source", choices=["isic", "kaggle", "huggingface", "direct", "all"],
+        default="all", help="Download from specific source (isic = MILK10k recommended!)")
     parser.add_argument("--dataset", type=str, help="Download specific dataset by key")
     parser.add_argument("--list", action="store_true", help="List all available datasets")
     parser.add_argument("--max-per-class", type=int,
@@ -713,6 +1066,12 @@ def main():
         print("AVAILABLE DATASETS FOR TRICORDER-3")
         print("="*70)
         
+        print("\n⭐ ISIC DATASETS (RECOMMENDED - has all 11 classes!):")
+        for key, info in ISIC_DATASETS.items():
+            rec = " ⭐ RECOMMENDED!" if info.get("recommended") else ""
+            print(f"  {key:20} - {info['name']:25} ({info.get('size', 'N/A')}){rec}")
+            print(f"  {'':20}   {info['description']}")
+        
         print("\n📦 KAGGLE DATASETS:")
         for key, info in KAGGLE_DATASETS.items():
             print(f"  {key:20} - {info['name']:25} ({info.get('size', 'N/A')})")
@@ -729,6 +1088,9 @@ def main():
             print(f"  {'':20}   {info['description']}")
         
         print("\n" + "="*70)
+        print("\n💡 TIP: Start with ISIC MILK10k for best results:")
+        print("   python download_datasets.py --source isic")
+        print("="*70)
         return
     
     output_dir = Path(args.output_dir)
@@ -741,6 +1103,34 @@ def main():
     print(f"Source: {args.source}")
     
     all_images, all_labels, all_metadata = [], [], []
+    
+    # =========================================================================
+    # ISIC MILK10k - THE RECOMMENDED DATASET (has all 11 classes!)
+    # =========================================================================
+    if args.source in ["isic", "all"]:
+        isic_config = get_config_value(config, "download", "isic", default={})
+        
+        for key, info in ISIC_DATASETS.items():
+            # Skip if not enabled in config (unless --all or --source isic)
+            if args.source != "isic" and not args.all and not isic_config.get(key, True):
+                continue
+            
+            if args.dataset and args.dataset != key:
+                continue
+            
+            dataset_dir = output_dir / f"isic_{key}"
+            
+            # Download (or show instructions)
+            download_isic_milk10k(dataset_dir)
+            
+            # Process if data exists
+            if dataset_dir.exists():
+                existing_images = list(dataset_dir.rglob("*.jpg")) + list(dataset_dir.rglob("*.png"))
+                if existing_images:
+                    imgs, lbls, meta = process_milk10k(dataset_dir)
+                    all_images.extend(imgs)
+                    all_labels.extend(lbls)
+                    all_metadata.extend(meta)
     
     # Download Kaggle datasets
     if args.source in ["kaggle", "all"]:
