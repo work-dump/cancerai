@@ -505,13 +505,15 @@ def export_to_onnx(
     Returns:
         Path to saved ONNX model
     """
+    # Move model to CPU for ONNX export (required by PyTorch ONNX exporter)
+    model = model.cpu()
     model.eval()
     
-    # Create dummy inputs
-    dummy_image = torch.randn(batch_size, 3, 512, 512)
-    dummy_demographics = torch.tensor([[45.0, 1.0, 5.0]] * batch_size)
+    # Create dummy inputs on CPU
+    dummy_image = torch.randn(batch_size, 3, 512, 512, device='cpu')
+    dummy_demographics = torch.tensor([[45.0, 1.0, 5.0]] * batch_size, device='cpu')
     
-    # Export
+    # Export using legacy exporter (more reliable than dynamo-based)
     torch.onnx.export(
         model,
         (dummy_image, dummy_demographics),
@@ -525,6 +527,7 @@ def export_to_onnx(
         },
         opset_version=opset_version,
         do_constant_folding=True,
+        dynamo=False,  # Use legacy exporter for better compatibility
     )
     
     print(f"Model exported to: {output_path}")
