@@ -280,20 +280,28 @@ class CompetitionAlignedLoss(nn.Module):
         probs = F.softmax(logits, dim=-1)
         targets_one_hot = F.one_hot(targets, num_classes=NUM_CLASSES).float()
         
-        # Get probability of true class
+        # Get probability of true class (clamp for numerical stability)
         pt = (probs * targets_one_hot).sum(dim=-1)
+        pt = torch.clamp(pt, min=1e-7, max=1.0 - 1e-7)
         
         # Apply focal modulation
         focal_weight = (1 - pt) ** self.focal_gamma
         
-        # Weighted cross entropy
-        ce = F.cross_entropy(logits, targets, reduction='none')
+        # Weighted cross entropy (clamp logits to prevent extreme values)
+        logits_clamped = torch.clamp(logits, min=-50, max=50)
+        ce = F.cross_entropy(logits_clamped, targets, reduction='none')
+        
+        # Clamp CE to prevent explosion
+        ce = torch.clamp(ce, max=100.0)
         
         # Apply class weights
         class_weights = self.class_weights[targets]
         
         # Combine
         loss = self.focal_alpha * focal_weight * ce * class_weights
+        
+        # Handle any remaining nan/inf
+        loss = torch.where(torch.isfinite(loss), loss, torch.zeros_like(loss))
         
         return loss.mean()
     
@@ -357,7 +365,9 @@ class F1OptimizedLoss(nn.Module):
         Where Weighted_F1 exactly matches competition formula:
             (3×F1_high + 2×F1_medium + 1×F1_benign) / 6
         """
-        probs = F.softmax(logits, dim=-1)
+        # Clamp logits for numerical stability
+        logits_clamped = torch.clamp(logits, min=-50, max=50)
+        probs = F.softmax(logits_clamped, dim=-1)
         targets_one_hot = F.one_hot(targets, num_classes=NUM_CLASSES).float()
         
         # Soft TP, FP, FN per class
@@ -365,16 +375,35 @@ class F1OptimizedLoss(nn.Module):
         fp = (probs * (1 - targets_one_hot)).sum(dim=0)
         fn = ((1 - probs) * targets_one_hot).sum(dim=0)
         
-        # Soft F1 per class
+        # Soft F1 per class (with better numerical stability)
         precision = tp / (tp + fp + self.epsilon)
         recall = tp / (tp + fn + self.epsilon)
-        f1 = 2 * precision * recall / (precision + recall + self.epsilon)
+        
+        # Only compute F1 for classes that have samples in this batch
+        # This prevents nan from classes with 0 samples
+        has_samples = (tp + fn) > 0  # Classes present in targets
+        f1 = torch.zeros_like(tp)
+        f1_denom = precision + recall + self.epsilon
+        f1 = torch.where(
+            has_samples,
+            2 * precision * recall / f1_denom,
+            torch.zeros_like(f1)
+        )
         
         # Weighted F1 loss exactly matching competition:
         # weighted_f1 = (3×F1_high + 2×F1_medium + 1×F1_benign) / 6
-        # Total weight sum = 4×3 + 3×2 + 4×1 = 12 + 6 + 4 = 22
-        # But we use sum of our weights (3+3+3+3 + 2+2+2 + 1+1+1+1 = 18)
-        weighted_f1 = (f1 * self.class_weights).sum() / self.class_weights.sum()
+        # Only consider classes that have samples in this batch
+        active_weights = torch.where(has_samples, self.class_weights, torch.zeros_like(self.class_weights))
+        weight_sum = active_weights.sum()
+        
+        # Prevent division by zero if no valid classes
+        if weight_sum > 0:
+            weighted_f1 = (f1 * active_weights).sum() / weight_sum
+        else:
+            weighted_f1 = torch.tensor(0.0, device=logits.device)
+        
+        # Clamp to valid range
+        weighted_f1 = torch.clamp(weighted_f1, min=0.0, max=1.0)
         
         return 1 - weighted_f1
 
@@ -467,7 +496,14 @@ class CombinedCompetitionLoss(nn.Module):
         ce = self.ce_loss(logits, targets)
         f1 = self.f1_loss(logits, targets)
         
+        # Replace nan with 0 to prevent training collapse
+        ce = torch.where(torch.isfinite(ce), ce, torch.zeros_like(ce))
+        f1 = torch.where(torch.isfinite(f1), f1, torch.zeros_like(f1))
+        
         total = self.ce_weight * ce + self.f1_weight * f1
+        
+        # Final nan check
+        total = torch.where(torch.isfinite(total), total, torch.zeros_like(total))
         
         return total, {"ce_loss": ce.item(), "f1_loss": f1.item()}
 
