@@ -392,17 +392,10 @@ class F1OptimizedLoss(nn.Module):
         
         # Weighted F1 loss exactly matching competition:
         # weighted_f1 = (3×F1_high + 2×F1_medium + 1×F1_benign) / 6
-        # Only consider classes that have samples in this batch
-        active_weights = torch.where(has_samples, self.class_weights, torch.zeros_like(self.class_weights))
-        weight_sum = active_weights.sum()
+        # Use all classes but the f1 for missing classes is already 0
+        weighted_f1 = (f1 * self.class_weights).sum() / (self.class_weights.sum() + self.epsilon)
         
-        # Prevent division by zero if no valid classes
-        if weight_sum > 0:
-            weighted_f1 = (f1 * active_weights).sum() / weight_sum
-        else:
-            weighted_f1 = torch.tensor(0.0, device=logits.device)
-        
-        # Clamp to valid range
+        # Clamp to valid range (keep in computation graph)
         weighted_f1 = torch.clamp(weighted_f1, min=0.0, max=1.0)
         
         return 1 - weighted_f1
