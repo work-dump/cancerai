@@ -158,6 +158,105 @@ def find_labels_file(data_dir: str) -> Optional[str]:
     return None
 
 
+def is_presplit_dataset(data_dir: str) -> bool:
+    """Check if the dataset directory contains pre-split train/val/test folders."""
+    data_path = Path(data_dir)
+    train_dir = data_path / "train"
+    val_dir = data_path / "val"
+    
+    # Check if train and val directories exist with labels.csv
+    return (
+        train_dir.exists() and 
+        val_dir.exists() and
+        (train_dir / "labels.csv").exists() and
+        (val_dir / "labels.csv").exists()
+    )
+
+
+def load_split_folder(split_dir: Path) -> Tuple[List[str], List[int], List[Dict[str, Any]]]:
+    """Load a single split folder (train, val, or test)."""
+    labels_file = split_dir / "labels.csv"
+    
+    if not labels_file.exists():
+        raise FileNotFoundError(f"No labels.csv found in {split_dir}")
+    
+    df = pd.read_csv(labels_file)
+    
+    image_paths = []
+    labels = []
+    metadata = []
+    
+    for _, row in df.iterrows():
+        # Get image path (relative to split_dir)
+        img_path = row.get('image', row.get('image_path', row.get('filename', '')))
+        
+        if not img_path:
+            continue
+        
+        # Make path absolute or relative to split_dir
+        full_path = split_dir / img_path
+        
+        # Handle symlinks - resolve to actual file
+        if full_path.is_symlink():
+            full_path = full_path.resolve()
+        
+        if not full_path.exists():
+            # Try as absolute path
+            if Path(img_path).exists():
+                full_path = Path(img_path)
+            else:
+                print(f"Warning: Image not found: {img_path}")
+                continue
+        
+        # Get label
+        label_str = str(row.get('label', row.get('class', row.get('diagnosis', ''))))
+        
+        if label_str in LABEL_MAPPING:
+            label_idx = LABEL_MAPPING[label_str]
+        else:
+            try:
+                label_idx = int(label_str)
+            except:
+                print(f"Warning: Unknown label {label_str}")
+                continue
+        
+        image_paths.append(str(full_path))
+        labels.append(label_idx)
+        
+        # Metadata
+        meta = {
+            'age': row.get('age', row.get('age_approx', 50)),
+            'sex': row.get('sex', row.get('gender', '')),
+            'localization': row.get('localization', row.get('site', '')),
+        }
+        metadata.append(meta)
+    
+    return image_paths, labels, metadata
+
+
+def load_presplit_dataset(data_dir: str) -> Dict[str, Tuple[List[str], List[int], List[Dict[str, Any]]]]:
+    """
+    Load a pre-split dataset with train/val/test folders.
+    
+    Returns:
+        Dict with 'train', 'val', and optionally 'test' keys
+    """
+    data_path = Path(data_dir)
+    
+    splits = {}
+    
+    for split_name in ['train', 'val', 'test']:
+        split_dir = data_path / split_name
+        
+        if split_dir.exists() and (split_dir / "labels.csv").exists():
+            print(f"  Loading {split_name}...")
+            paths, labels, meta = load_split_folder(split_dir)
+            splits[split_name] = (paths, labels, meta)
+            print(f"    Found {len(paths)} samples")
+    
+    return splits
+
+
 def load_dataset(
     data_dir: str,
     labels_file: Optional[str] = None,
@@ -169,6 +268,7 @@ def load_dataset(
     1. CSV with columns: image, label, age, gender, location
     2. Directory with images and labels.csv
     3. Directory with class subfolders
+    4. Pre-split dataset with train/val/test folders (returns train only)
     
     Returns:
         Tuple of (image_paths, labels, metadata)
@@ -394,45 +494,70 @@ def train(args):
             num_samples=args.synthetic_samples,
             output_dir=args.synthetic_dir,
         )
+        use_presplit = False
     else:
         print(f"\nLoading dataset from: {args.data_dir}")
-        image_paths, labels, metadata = load_dataset(
-            args.data_dir,
-            args.labels_file,
-        )
+        
+        # Check if this is a pre-split dataset
+        use_presplit = is_presplit_dataset(args.data_dir)
+        
+        if use_presplit:
+            print("  ✓ Detected pre-split dataset (train/val/test folders)")
+            splits = load_presplit_dataset(args.data_dir)
+            
+            if 'train' not in splits or 'val' not in splits:
+                print("ERROR: Pre-split dataset must have train/ and val/ folders!")
+                return
+            
+            train_paths, train_labels, train_meta = splits['train']
+            val_paths, val_labels, val_meta = splits['val']
+            
+            # Use train data for distribution printing
+            image_paths = train_paths
+            labels = train_labels
+            metadata = train_meta
+        else:
+            print("  → Using on-the-fly split (run split_dataset.py for reproducible splits)")
+            image_paths, labels, metadata = load_dataset(
+                args.data_dir,
+                args.labels_file,
+            )
     
     if len(image_paths) == 0:
         print("ERROR: No images found!")
         return
     
     # Print class distribution
-    print_class_distribution(labels)
+    print_class_distribution(labels if not use_presplit else train_labels)
     
-    # Split data
-    print(f"\nSplitting data (val_split={args.val_split})...")
+    # Split data (only if not pre-split)
+    if not use_presplit:
+        print(f"\nSplitting data (val_split={args.val_split})...")
+        
+        # Check if stratification is possible (each class needs at least 2 samples)
+        class_counts = np.bincount(labels, minlength=NUM_CLASSES)
+        can_stratify = all(c == 0 or c >= 2 for c in class_counts)
+        
+        try:
+            train_paths, val_paths, train_labels, val_labels, train_meta, val_meta = train_test_split(
+                image_paths, labels, metadata,
+                test_size=args.val_split,
+                stratify=labels if can_stratify and len(set(labels)) > 1 else None,
+                random_state=args.seed,
+            )
+        except ValueError as e:
+            print(f"Warning: Stratified split failed ({e}), using random split")
+            train_paths, val_paths, train_labels, val_labels, train_meta, val_meta = train_test_split(
+                image_paths, labels, metadata,
+                test_size=args.val_split,
+                stratify=None,
+                random_state=args.seed,
+            )
     
-    # Check if stratification is possible (each class needs at least 2 samples)
-    class_counts = np.bincount(labels, minlength=NUM_CLASSES)
-    can_stratify = all(c == 0 or c >= 2 for c in class_counts)
-    
-    try:
-        train_paths, val_paths, train_labels, val_labels, train_meta, val_meta = train_test_split(
-            image_paths, labels, metadata,
-            test_size=args.val_split,
-            stratify=labels if can_stratify and len(set(labels)) > 1 else None,
-            random_state=args.seed,
-        )
-    except ValueError as e:
-        print(f"Warning: Stratified split failed ({e}), using random split")
-        train_paths, val_paths, train_labels, val_labels, train_meta, val_meta = train_test_split(
-            image_paths, labels, metadata,
-            test_size=args.val_split,
-            stratify=None,
-            random_state=args.seed,
-        )
-    
-    print(f"  Train: {len(train_paths)} samples")
+    print(f"\n  Train: {len(train_paths)} samples")
     print(f"  Val: {len(val_paths)} samples")
+    if use_presplit and 'test' in splits:
+        print(f"  Test: {len(splits['test'][0])} samples (held out)")
     
     # Create datasets
     train_dataset = SkinLesionDataset(
@@ -622,63 +747,46 @@ def parse_args():
     )
     
     # Training
-    parser.add_argument("--epochs", type=int, 
-        default=get_config_value(config, 'training', 'epochs', default=50))
-    parser.add_argument("--batch-size", type=int, 
-        default=get_config_value(config, 'training', 'batch_size', default=16))
-    parser.add_argument("--learning-rate", type=float, 
-        default=get_config_value(config, 'training', 'learning_rate', default=1e-3))
-    parser.add_argument("--weight-decay", type=float, 
-        default=get_config_value(config, 'training', 'weight_decay', default=0.01))
-    parser.add_argument("--dropout", type=float, 
-        default=get_config_value(config, 'training', 'dropout', default=0.4))
-    parser.add_argument("--patience", type=int, 
-        default=get_config_value(config, 'training', 'patience', default=10))
-    parser.add_argument("--num-workers", type=int, 
-        default=get_config_value(config, 'training', 'num_workers', default=4))
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument("--weight-decay", type=float, default=0.01)
+    parser.add_argument("--dropout", type=float, default=0.4)
+    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--num-workers", type=int, default=4)
     
     # Augmentation
-    parser.add_argument("--use-mixup", action="store_true", 
-        default=get_config_value(config, 'augmentation', 'use_mixup', default=True))
+    parser.add_argument("--use-mixup", action="store_true", default=True)
     parser.add_argument("--no-mixup", dest="use_mixup", action="store_false")
-    parser.add_argument("--mixup-alpha", type=float, 
-        default=get_config_value(config, 'augmentation', 'mixup_alpha', default=0.4))
-    parser.add_argument("--label-smoothing", type=float, 
-        default=get_config_value(config, 'augmentation', 'label_smoothing', default=0.1))
-    parser.add_argument("--weighted-sampling", action="store_true", 
-        default=get_config_value(config, 'augmentation', 'weighted_sampling', default=True))
+    parser.add_argument("--mixup-alpha", type=float, default=0.4)
+    parser.add_argument("--label-smoothing", type=float, default=0.1)
+    parser.add_argument("--weighted-sampling", action="store_true", default=True)
     parser.add_argument("--no-weighted-sampling", dest="weighted_sampling", action="store_false")
     
     # Output
-    parser.add_argument("--save-dir", type=str, 
-        default=get_config_value(config, 'checkpoints', 'save_dir', default="checkpoints"))
-    parser.add_argument("--save-every", type=int, 
-        default=get_config_value(config, 'checkpoints', 'save_every', default=5),
-        help="Save checkpoint every N epochs (0 = only save best)")
-    parser.add_argument("--export-onnx", action="store_true", 
-        default=get_config_value(config, 'checkpoints', 'export_onnx', default=True))
+    parser.add_argument("--save-dir", type=str, default="checkpoints")
+    parser.add_argument(
+        "--save-every", type=int, default=5,
+        help="Save checkpoint every N epochs (0 = only save best)"
+    )
+    parser.add_argument("--export-onnx", action="store_true", default=True)
     parser.add_argument("--no-export-onnx", dest="export_onnx", action="store_false")
     
     # Resume training
-    parser.add_argument("--resume", type=str, 
-        default=get_config_value(config, 'checkpoints', 'resume', default=None),
-        help="Path to checkpoint to resume training from (e.g., checkpoints/latest.pt)")
+    parser.add_argument(
+        "--resume", type=str, default=None,
+        help="Path to checkpoint to resume training from (e.g., checkpoints/latest.pt)"
+    )
     
     # TensorBoard
-    parser.add_argument("--tensorboard", action="store_true", 
-        default=get_config_value(config, 'logging', 'tensorboard', default=True))
+    parser.add_argument("--tensorboard", action="store_true", default=True)
     parser.add_argument("--no-tensorboard", dest="tensorboard", action="store_false")
-    parser.add_argument("--tensorboard-dir", type=str, 
-        default=get_config_value(config, 'logging', 'tensorboard_dir', default="runs"))
+    parser.add_argument("--tensorboard-dir", type=str, default="runs")
     
     # Other
-    parser.add_argument("--seed", type=int, 
-        default=get_config_value(config, 'training', 'seed', default=42))
+    parser.add_argument("--seed", type=int, default=42)
     
-    # Store config for later use (e.g., weights_only setting)
-    args = parser.parse_args()
-    args._config = config
-    return args
+    return parser.parse_args()
 
 
 if __name__ == "__main__":

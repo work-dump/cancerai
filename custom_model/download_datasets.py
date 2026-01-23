@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
+import yaml
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -288,16 +289,50 @@ def download_kaggle_dataset(dataset_id: str, output_dir: Path) -> bool:
         return False
 
 
-def download_huggingface_dataset(dataset_id: str, output_dir: Path) -> bool:
+def get_hf_token() -> Optional[str]:
+    """Get HuggingFace token from config file or environment variable."""
+    # 1. Check environment variable first
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    if token:
+        return token
+    
+    # 2. Check config file
+    config_paths = [
+        Path("custom_model/train_config.yaml"),
+        Path("train_config.yaml"),
+        Path(__file__).parent / "train_config.yaml",
+    ]
+    
+    for config_path in config_paths:
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    config = yaml.safe_load(f)
+                token = config.get("huggingface", {}).get("token")
+                if token:
+                    return token
+            except:
+                pass
+    
+    return None
+
+
+def download_huggingface_dataset(dataset_id: str, output_dir: Path, token: Optional[str] = None) -> bool:
     """Download a HuggingFace dataset."""
     try:
         from datasets import load_dataset
         from PIL import Image
         
+        # Get token if not provided
+        if token is None:
+            token = get_hf_token()
+        
         print(f"\n📥 Downloading from HuggingFace: {dataset_id}")
+        if token:
+            print("  ✓ Using HuggingFace token")
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        dataset = load_dataset(dataset_id, trust_remote_code=True)
+        dataset = load_dataset(dataset_id, trust_remote_code=True, token=token)
         
         images_dir = output_dir / "images"
         images_dir.mkdir(exist_ok=True)
@@ -1051,14 +1086,14 @@ Then add more data from Kaggle:
         default="all", help="Download from specific source (isic = MILK10k recommended!)")
     parser.add_argument("--dataset", type=str, help="Download specific dataset by key")
     parser.add_argument("--list", action="store_true", help="List all available datasets")
-    parser.add_argument("--max-per-class", type=int,
-        default=get_config_value(config, "download", "max_per_class", default=3000))
-    parser.add_argument("--min-per-class", type=int,
-        default=get_config_value(config, "download", "min_per_class", default=500))
-    parser.add_argument("--no-balance", action="store_true")
     parser.add_argument("--all", action="store_true", help="Download ALL datasets")
+    parser.add_argument("--hf-token", type=str, default=None,
+        help="HuggingFace token (or set HF_TOKEN env var, or in train_config.yaml)")
     
     args = parser.parse_args()
+    
+    # Set token for HuggingFace downloads
+    hf_token = args.hf_token or get_hf_token()
     
     # List datasets
     if args.list:
@@ -1176,7 +1211,7 @@ Then add more data from Kaggle:
             dataset_dir = output_dir / f"hf_{key}"
             
             if not dataset_dir.exists() or not any(dataset_dir.iterdir()):
-                download_huggingface_dataset(info["id"], dataset_dir)
+                download_huggingface_dataset(info["id"], dataset_dir, token=hf_token)
             
             imgs, lbls, meta = process_generic_dataset(dataset_dir)
             all_images.extend(imgs)
@@ -1228,14 +1263,7 @@ Then add more data from Kaggle:
     
     print(f"After deduplication: {len(all_images)} images")
     
-    # Balance
-    if not args.no_balance:
-        all_images, all_labels, all_metadata = balance_dataset(
-            all_images, all_labels, all_metadata,
-            args.max_per_class, args.min_per_class,
-        )
-    
-    # Save
+    # Save ALL images (no balancing - balancing is done in split_dataset.py)
     labels_path = output_dir / "labels_final.csv"
     create_labels_csv(all_images, all_labels, all_metadata, labels_path)
     
@@ -1245,11 +1273,14 @@ Then add more data from Kaggle:
     print(f"""
 Next steps:
 
-  1. Train your model:
-     python custom_model/train.py
+  1. Split dataset into train/val/test (RECOMMENDED):
+     python custom_model/split_dataset.py --input {output_dir} --output training_data_split
 
-  2. Or with custom settings:
-     python custom_model/train.py --epochs 100 --batch-size 32
+  2. Or split with balancing:
+     python custom_model/split_dataset.py --input {output_dir} --output training_data_split --balance
+
+  3. Then train:
+     python custom_model/train.py --data-dir training_data_split
 """)
 
 

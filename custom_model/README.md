@@ -18,12 +18,18 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 pip install -r requirements_train.txt
 
 # 2. Download datasets
-python custom_model/download_datasets.py
+python custom_model/download_datasets.py --source isic
 
-# 3. Train
-python custom_model/train.py
+# 3. Split into train/val/test with balancing
+python custom_model/split_dataset.py --input training_data --output training_data_split --balance
 
-# 4. Submit (model at: checkpoints/model.onnx)
+# 4. Train
+python custom_model/train.py --data-dir training_data_split
+
+# 5. Evaluate on held-out test set
+python custom_model/evaluate.py --model checkpoints/model.onnx --data-dir training_data_split/test
+
+# 6. Submit (model at: checkpoints/model.onnx)
 ```
 
 ## Table of Contents
@@ -143,7 +149,49 @@ pip install kaggle
    python custom_model/download_datasets.py --source isic
    ```
 
-### Step 3: (Optional) Add More Data from Kaggle
+### Step 3: Split Dataset (RECOMMENDED for Reproducible Training)
+
+After downloading, split your data into train/val/test sets. This ensures:
+- **Reproducible results** - Same split across training sessions
+- **Proper evaluation** - Test set is never seen during training
+- **Resume training** - Continue from checkpoint without data leakage
+
+```bash
+# Split into 80% train, 10% val, 10% test (no balancing)
+python custom_model/split_dataset.py --input training_data --output training_data_split
+
+# Split WITH balancing (recommended for imbalanced datasets)
+python custom_model/split_dataset.py --input training_data --output training_data_split --balance
+
+# Custom balancing limits
+python custom_model/split_dataset.py --input training_data --output training_data_split \
+    --balance --min-per-class 500 --max-per-class 3000
+```
+
+**Note**: Balancing only affects the training set. Validation and test sets remain unbalanced for fair evaluation.
+
+This creates:
+```
+training_data_split/
+├── train/
+│   ├── labels.csv
+│   └── images/ (symlinks)
+├── val/
+│   ├── labels.csv
+│   └── images/
+└── test/
+    ├── labels.csv
+    └── images/
+```
+
+**Then train with the split dataset:**
+```bash
+python custom_model/train.py --data-dir training_data_split
+```
+
+The training code automatically detects pre-split folders and uses them without re-splitting.
+
+### Step 4: (Optional) Add More Data from Kaggle
 
 Edit `train_config.yaml` to enable additional datasets:
 
@@ -173,7 +221,7 @@ Then download:
 python custom_model/download_datasets.py --source kaggle
 ```
 
-### Step 4: Verify Dataset
+### Step 5: Verify Dataset
 
 ```bash
 # List all available datasets

@@ -10,20 +10,24 @@ Evaluates models using exact competition scoring:
 Supports both PyTorch (.pt) and ONNX (.onnx) models.
 
 Usage:
-    # Evaluate ONNX model
-    python custom_model/evaluate.py --model checkpoints/model.onnx --data-dir competition_datasets/tricorder-3-mainnet/extracted
+    # Download competition dataset and evaluate
+    python custom_model/evaluate.py --model checkpoints/model.onnx --download-hf
+    
+    # Evaluate on local dataset
+    python custom_model/evaluate.py --model checkpoints/model.onnx --data-dir training_data
     
     # Evaluate PyTorch checkpoint
-    python custom_model/evaluate.py --model checkpoints/best_model.pt --data-dir competition_datasets/tricorder-3-mainnet/extracted
+    python custom_model/evaluate.py --model checkpoints/best_model.pt --data-dir training_data
     
     # Compare with existing skin.onnx model
-    python custom_model/evaluate.py --model available_models/skin.onnx --data-dir competition_datasets/tricorder-3-mainnet/extracted
+    python custom_model/evaluate.py --model checkpoints/model.onnx --compare available_models/skin.onnx --data-dir training_data
 """
 
 import os
 import sys
 import argparse
 import json
+import zipfile
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 from collections import defaultdict
@@ -36,6 +40,142 @@ from tqdm import tqdm
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+
+# ============================================================================
+# HuggingFace Dataset Download
+# ============================================================================
+
+COMPETITION_DATASETS = {
+    "tricorder-3-testnet": {
+        "repo": "safescanai/competition-dataset-tricoder-1-testnet",
+        "filename": None,  # Download all files
+        "repo_type": "dataset",
+    },
+    "tricorder-3": {
+        "repo": "safescanai/competition-dataset-tricoder-1-testnet",
+        "filename": None,
+        "repo_type": "dataset",
+    },
+}
+
+
+def get_hf_token() -> Optional[str]:
+    """Get HuggingFace token from config file or environment variable."""
+    import os
+    import yaml
+    
+    # 1. Check environment variable first
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    if token:
+        return token
+    
+    # 2. Check config file
+    config_paths = [
+        Path("custom_model/train_config.yaml"),
+        Path("train_config.yaml"),
+        Path(__file__).parent / "train_config.yaml",
+    ]
+    
+    for config_path in config_paths:
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    config = yaml.safe_load(f)
+                token = config.get("huggingface", {}).get("token")
+                if token:
+                    return token
+            except:
+                pass
+    
+    return None
+
+
+def download_competition_dataset(
+    dataset_key: str = "tricorder-3",
+    output_dir: str = "competition_data",
+    token: Optional[str] = None,
+) -> Path:
+    """
+    Download competition dataset from HuggingFace.
+    
+    Args:
+        dataset_key: Key for dataset (tricorder-3, tricorder-3-testnet)
+        output_dir: Directory to save dataset
+        token: HuggingFace token (optional, uses config/env if not provided)
+        
+    Returns:
+        Path to extracted dataset directory
+    """
+    from huggingface_hub import hf_hub_download, HfApi
+    
+    # Get token
+    if token is None:
+        token = get_hf_token()
+    
+    if token:
+        print("  ✓ Using HuggingFace token")
+    
+    if dataset_key not in COMPETITION_DATASETS:
+        raise ValueError(f"Unknown dataset: {dataset_key}. Available: {list(COMPETITION_DATASETS.keys())}")
+    
+    config = COMPETITION_DATASETS[dataset_key]
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    print(f"\n📥 Downloading competition dataset: {dataset_key}")
+    print(f"   From: {config['repo']}")
+    
+    api = HfApi(token=token)
+    
+    # List files in the repo
+    try:
+        files = api.list_repo_files(
+            repo_id=config['repo'],
+            repo_type=config['repo_type'],
+            token=token,
+        )
+        print(f"   Found {len(files)} files in repo")
+    except Exception as e:
+        print(f"❌ Failed to list files: {e}")
+        if "401" in str(e) or "403" in str(e) or "unauthorized" in str(e).lower():
+            print("\n💡 This might be a private dataset. Set your HuggingFace token:")
+            print("   Option 1: export HF_TOKEN=your_token")
+            print("   Option 2: Edit custom_model/train_config.yaml → huggingface.token")
+        print("\nTrying alternative approach...")
+        # Try direct download
+        files = []
+    
+    # Download all files or specific file
+    downloaded_files = []
+    
+    for filename in files:
+        try:
+            local_path = hf_hub_download(
+                repo_id=config['repo'],
+                filename=filename,
+                repo_type=config['repo_type'],
+                local_dir=str(output_path),
+                token=token,
+            )
+            downloaded_files.append(local_path)
+            print(f"   ✓ Downloaded: {filename}")
+        except Exception as e:
+            print(f"   ⚠ Failed to download {filename}: {e}")
+    
+    # Look for zip files and extract
+    for f in output_path.glob("*.zip"):
+        print(f"\n📦 Extracting: {f.name}")
+        extract_dir = output_path / "extracted"
+        extract_dir.mkdir(exist_ok=True)
+        
+        with zipfile.ZipFile(f, 'r') as z:
+            z.extractall(extract_dir)
+        print(f"   ✓ Extracted to: {extract_dir}")
+        return extract_dir
+    
+    # If no zip, return the output directory
+    return output_path
 
 from custom_model.trainer import (
     evaluate_predictions,
@@ -371,8 +511,21 @@ def main():
         help="Path to model file (.onnx or .pt)"
     )
     parser.add_argument(
-        "--data-dir", type=str, required=True,
-        help="Path to dataset directory"
+        "--data-dir", type=str, default=None,
+        help="Path to dataset directory (or use --download-hf)"
+    )
+    parser.add_argument(
+        "--download-hf", action="store_true",
+        help="Download competition dataset from HuggingFace"
+    )
+    parser.add_argument(
+        "--hf-token", type=str, default=None,
+        help="HuggingFace token (or set HF_TOKEN env var, or in train_config.yaml)"
+    )
+    parser.add_argument(
+        "--dataset-key", type=str, default="tricorder-3",
+        choices=list(COMPETITION_DATASETS.keys()),
+        help="Which competition dataset to download"
     )
     parser.add_argument(
         "--labels-file", type=str, default=None,
@@ -392,6 +545,19 @@ def main():
     )
     
     args = parser.parse_args()
+    
+    # Determine data directory
+    if args.download_hf:
+        data_dir = download_competition_dataset(
+            dataset_key=args.dataset_key,
+            output_dir="competition_data",
+            token=args.hf_token,
+        )
+        args.data_dir = str(data_dir)
+    elif args.data_dir is None:
+        # Default to training data
+        args.data_dir = "training_data"
+        print(f"No --data-dir specified, using: {args.data_dir}")
     
     # Load dataset
     print(f"Loading dataset from: {args.data_dir}")

@@ -70,6 +70,15 @@ pytorch:
   weights_only: false                          # Set false for PyTorch 2.6+ compatibility
 
 # ----------------------------------------------------------------------------
+# HuggingFace Settings
+# ----------------------------------------------------------------------------
+# Required for downloading competition datasets and some public datasets
+# Get your token at: https://huggingface.co/settings/tokens
+huggingface:
+  token: your_hf_token                                  # Your HuggingFace token (or use HF_TOKEN env var)
+                                               # Example: "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# ----------------------------------------------------------------------------
 # Dataset Download Settings
 # ----------------------------------------------------------------------------
 # Used by: python custom_model/download_datasets.py
@@ -106,8 +115,16 @@ download:
   # Direct downloads (URLs)
   direct:
     ph2: false                                 # 200 images, melanoma/nevi
-  
-  # Processing options
-  balance_dataset: true                        # Balance after download
-  max_per_class: 3000                          # Max samples per class
-  min_per_class: 500                           # Min samples (oversample if less)
+
+# ----------------------------------------------------------------------------
+# Dataset Split Settings
+# ----------------------------------------------------------------------------
+# Used by: python custom_model/split_dataset.py
+split:
+  train_ratio: 0.8                             # 80% for training
+  val_ratio: 0.1                               # 10% for validation
+  test_ratio: 0.1                              # 10% for testing (held out)
+  stratify: true                               # Stratified split (recommended)
+  balance: true                                # Balance training set
+  max_per_class: 3000                          # Max samples per class when balancing
+  min_per_class: 500                           # Min samples per class when balancing
