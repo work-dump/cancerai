@@ -170,6 +170,11 @@ python custom_model/split_dataset.py --input training_data --output training_dat
 
 **Note**: Balancing only affects the training set. Validation and test sets remain unbalanced for fair evaluation.
 
+> ⚠️ **Windows Users**: By default, `split_dataset.py` creates symlinks which require Administrator privileges or Developer Mode on Windows. If you see training issues (loss stuck, very low accuracy), use the `--copy-images` flag instead:
+> ```bash
+> python custom_model/split_dataset.py --input training_data --output training_data_split --copy-images
+> ```
+
 This creates:
 ```
 training_data_split/

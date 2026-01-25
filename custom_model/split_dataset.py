@@ -36,6 +36,32 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
+import math
+
+
+def safe_get(row, keys, default):
+    """
+    Safely get a value from a pandas row, handling NaN values.
+    
+    Args:
+        row: pandas Series (row from DataFrame)
+        keys: str or list of str - column name(s) to try
+        default: default value if all keys are missing or NaN
+        
+    Returns:
+        The value or default if NaN/missing
+    """
+    if isinstance(keys, str):
+        keys = [keys]
+    
+    for key in keys:
+        if key in row.index:
+            val = row[key]
+            # Check for NaN (works for both numeric and string NaN)
+            if pd.notna(val):
+                return val
+    
+    return default
 
 
 def find_labels_file(data_dir: Path) -> Optional[Path]:
@@ -153,11 +179,11 @@ def load_milk10k_dataset(data_dir: Path) -> Tuple[List[str], List[str], List[Dic
         image_paths.append(str(img_path))
         labels.append(label)
         
-        # Extract metadata
+        # Extract metadata (handle NaN values properly)
         meta = {
-            'age': row.get('age_approx', 50),
-            'sex': row.get('sex', ''),
-            'localization': row.get('site', ''),
+            'age': safe_get(row, ['age_approx', 'age'], 50),
+            'sex': safe_get(row, ['sex', 'gender'], ''),
+            'localization': safe_get(row, ['site', 'localization'], ''),
         }
         metadata.append(meta)
     
@@ -219,13 +245,13 @@ def load_dataset_info(data_dir: Path) -> Tuple[List[str], List[str], List[Dict]]
         image_paths = df[image_col].tolist()
         labels = df[label_col].tolist()
         
-        # Extract metadata
+        # Extract metadata (handle NaN values properly)
         metadata = []
         for _, row in df.iterrows():
             meta = {
-                'age': row.get('age', row.get('age_approx', 50)),
-                'sex': row.get('sex', row.get('gender', '')),
-                'localization': row.get('localization', row.get('site', '')),
+                'age': safe_get(row, ['age', 'age_approx'], 50),
+                'sex': safe_get(row, ['sex', 'gender'], ''),
+                'localization': safe_get(row, ['localization', 'site'], ''),
             }
             metadata.append(meta)
         
@@ -437,7 +463,36 @@ def save_split(
         copy_images: Whether to copy images (slower, uses more space)
         symlink_images: Whether to create symlinks (faster, saves space)
     """
+    import platform
+    
     output_dir = Path(output_dir)
+    
+    # Windows symlink warning
+    is_windows = platform.system() == "Windows"
+    if is_windows and symlink_images and not copy_images:
+        print("\n⚠️  WARNING: Windows detected!")
+        print("   Symlinks require Administrator privileges or Developer Mode.")
+        print("   If training fails, re-run with: --copy-images")
+        print("")
+        # Try to test if symlinks work
+        test_symlink = output_dir / ".symlink_test"
+        test_target = output_dir / ".symlink_target"
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            test_target.touch()
+            test_symlink.symlink_to(test_target)
+            test_symlink.unlink()
+            test_target.unlink()
+            print("   ✓ Symlink test passed - symlinks should work.\n")
+        except OSError as e:
+            print(f"   ❌ Symlink test FAILED: {e}")
+            print("   → Automatically switching to copy mode.\n")
+            copy_images = True
+            symlink_images = False
+            if test_target.exists():
+                test_target.unlink()
+    
+    symlink_failures = 0
     
     for split_name, (paths, labels, metadata) in splits.items():
         split_dir = output_dir / split_name
@@ -475,17 +530,36 @@ def save_split(
                 shutil.copy2(src_path, dst_path)
             elif symlink_images:
                 # Create symlink with absolute path
-                if dst_path.exists() or dst_path.is_symlink():
-                    dst_path.unlink()
-                dst_path.symlink_to(src_path.resolve())
+                try:
+                    if dst_path.exists() or dst_path.is_symlink():
+                        dst_path.unlink()
+                    dst_path.symlink_to(src_path.resolve())
+                except OSError as e:
+                    # Symlink failed - fall back to copy
+                    symlink_failures += 1
+                    if symlink_failures == 1:
+                        print(f"\n⚠️  Symlink failed, falling back to copy: {e}")
+                    shutil.copy2(src_path, dst_path)
             
-            # Record for CSV
+            # Record for CSV (ensure no NaN values in output)
+            age_val = meta.get('age', 50)
+            sex_val = meta.get('sex', '')
+            loc_val = meta.get('localization', '')
+            
+            # Handle any remaining NaN values
+            if pd.isna(age_val):
+                age_val = 50
+            if pd.isna(sex_val):
+                sex_val = ''
+            if pd.isna(loc_val):
+                loc_val = ''
+            
             records.append({
                 'image': f"images/{dst_filename}",
                 'label': label,
-                'age': meta.get('age', 50),
-                'sex': meta.get('sex', ''),
-                'localization': meta.get('localization', ''),
+                'age': age_val,
+                'sex': sex_val,
+                'localization': loc_val,
             })
         
         # Save labels CSV
@@ -494,6 +568,10 @@ def save_split(
         df.to_csv(labels_path, index=False)
         
         print(f"  ✓ {split_name}: {len(records)} samples -> {split_dir}")
+    
+    if symlink_failures > 0:
+        print(f"\n⚠️  {symlink_failures} symlinks failed and were copied instead.")
+        print("   For future runs, use: --copy-images")
 
 
 def print_split_stats(splits: Dict[str, Tuple[List, List, List]]) -> None:

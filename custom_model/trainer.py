@@ -300,8 +300,8 @@ class CompetitionAlignedLoss(nn.Module):
         # Combine
         loss = self.focal_alpha * focal_weight * ce * class_weights
         
-        # Handle any remaining nan/inf
-        loss = torch.where(torch.isfinite(loss), loss, torch.zeros_like(loss))
+        # Handle any remaining nan/inf (nan_to_num keeps gradient graph intact)
+        loss = torch.nan_to_num(loss, nan=0.0, posinf=100.0, neginf=0.0)
         
         return loss.mean()
     
@@ -378,17 +378,13 @@ class F1OptimizedLoss(nn.Module):
         # Soft F1 per class (with better numerical stability)
         precision = tp / (tp + fp + self.epsilon)
         recall = tp / (tp + fn + self.epsilon)
-        
-        # Only compute F1 for classes that have samples in this batch
-        # This prevents nan from classes with 0 samples
-        has_samples = (tp + fn) > 0  # Classes present in targets
-        f1 = torch.zeros_like(tp)
         f1_denom = precision + recall + self.epsilon
-        f1 = torch.where(
-            has_samples,
-            2 * precision * recall / f1_denom,
-            torch.zeros_like(f1)
-        )
+        
+        # Compute F1 for all classes (missing classes will naturally have low F1)
+        f1 = 2 * precision * recall / f1_denom
+        
+        # Replace any nan/inf with 0 (keeps gradient graph intact)
+        f1 = torch.nan_to_num(f1, nan=0.0, posinf=0.0, neginf=0.0)
         
         # Weighted F1 loss exactly matching competition:
         # weighted_f1 = (3×F1_high + 2×F1_medium + 1×F1_benign) / 6
@@ -489,14 +485,14 @@ class CombinedCompetitionLoss(nn.Module):
         ce = self.ce_loss(logits, targets)
         f1 = self.f1_loss(logits, targets)
         
-        # Replace nan with 0 to prevent training collapse
-        ce = torch.where(torch.isfinite(ce), ce, torch.zeros_like(ce))
-        f1 = torch.where(torch.isfinite(f1), f1, torch.zeros_like(f1))
+        # Replace nan/inf with safe values (nan_to_num keeps gradient graph intact!)
+        ce = torch.nan_to_num(ce, nan=0.0, posinf=10.0, neginf=0.0)
+        f1 = torch.nan_to_num(f1, nan=0.0, posinf=1.0, neginf=0.0)
         
         total = self.ce_weight * ce + self.f1_weight * f1
         
         # Final nan check
-        total = torch.where(torch.isfinite(total), total, torch.zeros_like(total))
+        total = torch.nan_to_num(total, nan=0.0, posinf=10.0, neginf=0.0)
         
         return total, {"ce_loss": ce.item(), "f1_loss": f1.item()}
 
@@ -564,40 +560,119 @@ class SkinLesionDataset(Dataset):
         labels: List[int],
         metadata: Optional[List[Dict[str, Any]]] = None,
         transform: Optional[Callable] = None,
+        validate_images: bool = True,
     ):
         self.image_paths = image_paths
         self.labels = labels
         self.metadata = metadata or [{}] * len(image_paths)
         self.transform = transform or get_val_transforms()
+        self._load_failures = 0  # Track how many images fail to load
         
         assert len(image_paths) == len(labels) == len(self.metadata)
+        
+        # Validate a sample of images to detect loading issues early
+        if validate_images:
+            self._validate_images()
+    
+    def _validate_images(self, num_samples: int = 10):
+        """Validate that images can be loaded. Helps detect symlink/path issues."""
+        import random
+        
+        # Test a random sample of images
+        sample_indices = random.sample(range(len(self.image_paths)), min(num_samples, len(self.image_paths)))
+        failures = 0
+        
+        for idx in sample_indices:
+            path = self.image_paths[idx]
+            try:
+                # Check if file exists
+                from pathlib import Path
+                p = Path(path)
+                if not p.exists():
+                    failures += 1
+                    if failures <= 3:
+                        print(f"  ⚠️  Image not found: {path}")
+                    continue
+                
+                # Check if it's a broken symlink
+                if p.is_symlink():
+                    target = p.resolve()
+                    if not target.exists():
+                        failures += 1
+                        if failures <= 3:
+                            print(f"  ⚠️  Broken symlink: {path} -> {target}")
+                        continue
+                
+                # Try to open the image
+                img = Image.open(path)
+                img.verify()
+                
+            except Exception as e:
+                failures += 1
+                if failures <= 3:
+                    print(f"  ⚠️  Cannot load image {path}: {e}")
+        
+        if failures > 0:
+            pct = failures / len(sample_indices) * 100
+            print(f"\n{'='*60}")
+            print(f"⚠️  WARNING: {failures}/{len(sample_indices)} sampled images ({pct:.0f}%) failed to load!")
+            print(f"{'='*60}")
+            if pct >= 50:
+                print("This will cause training to fail or produce poor results!")
+                print("\nPossible causes:")
+                print("  1. On Windows: Symlinks don't work without admin privileges")
+                print("     → Re-run split_dataset.py with: --copy-images")
+                print("  2. Image paths are incorrect")
+                print("  3. Images were moved or deleted")
+                print(f"{'='*60}\n")
     
     def __len__(self) -> int:
         return len(self.image_paths)
     
     def _encode_demographics(self, meta: Dict[str, Any]) -> np.ndarray:
         """Encode demographics to model input format."""
-        # Age (default 50 if missing)
-        age = float(meta.get('age', 50))
+        import math
         
-        # Gender: male=1, female=0, unknown=-1
-        gender_str = str(meta.get('gender', '')).lower()
-        if gender_str in ['male', 'm', '1']:
-            gender = 1.0
-        elif gender_str in ['female', 'f', '0']:
-            gender = 0.0
-        else:
+        # Age (default 50 if missing or NaN)
+        age_val = meta.get('age', meta.get('age_approx', 50))
+        try:
+            age = float(age_val)
+            if math.isnan(age):
+                age = 50.0
+        except (TypeError, ValueError):
+            age = 50.0
+        
+        # Gender: male=1, female=0, unknown=-1 (check both 'gender' and 'sex' keys)
+        gender_val = meta.get('gender', meta.get('sex', ''))
+        try:
+            gender_str = str(gender_val).lower() if gender_val is not None else ''
+            # Handle NaN string
+            if gender_str == 'nan' or gender_str == '':
+                gender = -1.0
+            elif gender_str in ['male', 'm', '1']:
+                gender = 1.0
+            elif gender_str in ['female', 'f', '0']:
+                gender = 0.0
+            else:
+                gender = -1.0
+        except:
             gender = -1.0
         
-        # Location: 1-7, unknown=0
-        location = meta.get('location', 0)
-        if isinstance(location, str):
-            location_map = {
-                'arm': 1, 'feet': 2, 'genitalia': 3, 'hand': 4,
-                'head': 5, 'leg': 6, 'torso': 7
-            }
-            location = location_map.get(location.lower(), 0)
-        location = float(location)
+        # Location: 1-7, unknown=0 (check both 'location' and 'localization' keys)
+        location_val = meta.get('location', meta.get('localization', 0))
+        try:
+            if isinstance(location_val, str) and location_val.lower() != 'nan':
+                location_map = {
+                    'arm': 1, 'feet': 2, 'genitalia': 3, 'hand': 4,
+                    'head': 5, 'leg': 6, 'torso': 7
+                }
+                location = float(location_map.get(location_val.lower(), 0))
+            else:
+                location = float(location_val) if location_val is not None else 0.0
+                if math.isnan(location):
+                    location = 0.0
+        except (TypeError, ValueError):
+            location = 0.0
         
         return np.array([age, gender, location], dtype=np.float32)
     
@@ -621,11 +696,19 @@ class SkinLesionDataset(Dataset):
             
         except Exception as e:
             # Handle corrupt/missing images by returning a placeholder
-            print(f"Warning: Could not load image {self.image_paths[idx]}: {e}")
+            self._load_failures += 1
+            if self._load_failures <= 5:
+                print(f"Warning: Could not load image {self.image_paths[idx]}: {e}")
+            elif self._load_failures == 6:
+                print("(Suppressing further load warnings...)")
             # Return a black image with same label (will be learned as noise)
             placeholder = torch.zeros(3, 512, 512)
             demographics = torch.tensor([50.0, -1.0, 0.0])  # Default demographics
             return placeholder, demographics, self.labels[idx]
+    
+    def get_load_failure_count(self) -> int:
+        """Return the number of images that failed to load during training."""
+        return self._load_failures
 
 
 def create_weighted_sampler(
@@ -771,6 +854,7 @@ class TrainingConfig:
     f1_weight: float = 0.5
     focal_gamma: float = 2.0
     label_smoothing: float = 0.1
+    use_simple_loss: bool = False  # Use simple CE loss instead of complex combined loss
     
     # Regularization
     dropout: float = 0.4
@@ -874,13 +958,25 @@ class Tricorder3Trainer:
         # Move model to device
         self.model = self.model.to(self.device)
         
-        # Loss function
-        self.criterion = CombinedCompetitionLoss(
-            ce_weight=self.config.ce_weight,
-            f1_weight=self.config.f1_weight,
-            focal_gamma=self.config.focal_gamma,
-            label_smoothing=self.config.label_smoothing,
-        ).to(self.device)
+        # Loss function - use simple CE if complex loss causes issues
+        if getattr(self.config, 'use_simple_loss', False):
+            print("  Using simple weighted cross-entropy loss")
+            # Simple weighted CE loss
+            class_weights = torch.ones(NUM_CLASSES)
+            for idx in HIGH_RISK_CLASSES:
+                class_weights[idx] = 3.0
+            for idx in MEDIUM_RISK_CLASSES:
+                class_weights[idx] = 2.0
+            self.criterion = nn.CrossEntropyLoss(weight=class_weights.to(self.device))
+            self._simple_loss = True
+        else:
+            self.criterion = CombinedCompetitionLoss(
+                ce_weight=self.config.ce_weight,
+                f1_weight=self.config.f1_weight,
+                focal_gamma=self.config.focal_gamma,
+                label_smoothing=self.config.label_smoothing,
+            ).to(self.device)
+            self._simple_loss = False
         
         # Optimizer
         self.optimizer = AdamW(
@@ -963,11 +1059,32 @@ class Tricorder3Trainer:
                 logits, probs = self.model.forward_with_logits(images, demographics)
                 
                 # Loss
-                loss, _ = self.criterion(logits, labels)
+                if self._simple_loss:
+                    loss = self.criterion(logits, labels)
+                else:
+                    loss, _ = self.criterion(logits, labels)
+            
+            # Check for nan loss
+            if torch.isnan(loss):
+                print(f"WARNING: NaN loss detected at batch! Skipping...")
+                continue
             
             # Backward
             self.optimizer.zero_grad()
             loss.backward()
+            
+            # Check for nan gradients
+            has_nan_grad = False
+            for name, param in self.model.named_parameters():
+                if param.grad is not None and torch.isnan(param.grad).any():
+                    has_nan_grad = True
+                    break
+            
+            if has_nan_grad:
+                print(f"WARNING: NaN gradients detected! Skipping batch...")
+                self.optimizer.zero_grad()  # Clear the bad gradients
+                continue
+            
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
             
@@ -1015,8 +1132,13 @@ class Tricorder3Trainer:
             logits, probs = self.model.forward_with_logits(images, demographics)
             
             # Loss
-            loss, _ = self.criterion(logits, labels)
-            total_loss += loss.item()
+            if self._simple_loss:
+                loss = self.criterion(logits, labels)
+            else:
+                loss, _ = self.criterion(logits, labels)
+            
+            if not torch.isnan(loss):
+                total_loss += loss.item()
             
             # Store predictions
             preds = probs.argmax(dim=-1).cpu().numpy()

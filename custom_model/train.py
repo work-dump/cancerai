@@ -173,6 +173,23 @@ def is_presplit_dataset(data_dir: str) -> bool:
     )
 
 
+def _safe_get_metadata(row, keys: List[str], default):
+    """
+    Safely get metadata value from a pandas row, handling NaN.
+    
+    Args:
+        row: pandas Series
+        keys: list of column names to try
+        default: default value if missing or NaN
+    """
+    for key in keys:
+        if key in row.index:
+            val = row[key]
+            if pd.notna(val):
+                return val
+    return default
+
+
 def load_split_folder(split_dir: Path) -> Tuple[List[str], List[int], List[Dict[str, Any]]]:
     """Load a single split folder (train, val, or test)."""
     labels_file = split_dir / "labels.csv"
@@ -188,7 +205,7 @@ def load_split_folder(split_dir: Path) -> Tuple[List[str], List[int], List[Dict[
     
     for _, row in df.iterrows():
         # Get image path (relative to split_dir)
-        img_path = row.get('image', row.get('image_path', row.get('filename', '')))
+        img_path = _safe_get_metadata(row, ['image', 'image_path', 'filename'], '')
         
         if not img_path:
             continue
@@ -208,10 +225,13 @@ def load_split_folder(split_dir: Path) -> Tuple[List[str], List[int], List[Dict[
                 print(f"Warning: Image not found: {img_path}")
                 continue
         
-        # Get label
-        label_str = str(row.get('label', row.get('class', row.get('diagnosis', ''))))
+        # Get label (handle case-insensitive)
+        label_str = str(_safe_get_metadata(row, ['label', 'class', 'diagnosis'], ''))
+        label_str_upper = label_str.upper().strip()
         
-        if label_str in LABEL_MAPPING:
+        if label_str_upper in LABEL_MAPPING:
+            label_idx = LABEL_MAPPING[label_str_upper]
+        elif label_str in LABEL_MAPPING:
             label_idx = LABEL_MAPPING[label_str]
         else:
             try:
@@ -223,11 +243,11 @@ def load_split_folder(split_dir: Path) -> Tuple[List[str], List[int], List[Dict[
         image_paths.append(str(full_path))
         labels.append(label_idx)
         
-        # Metadata
+        # Metadata (handle NaN properly)
         meta = {
-            'age': row.get('age', row.get('age_approx', 50)),
-            'sex': row.get('sex', row.get('gender', '')),
-            'localization': row.get('localization', row.get('site', '')),
+            'age': _safe_get_metadata(row, ['age', 'age_approx'], 50),
+            'sex': _safe_get_metadata(row, ['sex', 'gender'], ''),
+            'localization': _safe_get_metadata(row, ['localization', 'site', 'location'], ''),
         }
         metadata.append(meta)
     
@@ -602,6 +622,7 @@ def train(args):
         num_workers=args.num_workers,
         use_tensorboard=args.tensorboard,
         tensorboard_dir=args.tensorboard_dir,
+        use_simple_loss=args.simple_loss,
     )
     
     # Create trainer
@@ -762,6 +783,8 @@ def parse_args():
     parser.add_argument("--label-smoothing", type=float, default=0.1)
     parser.add_argument("--weighted-sampling", action="store_true", default=True)
     parser.add_argument("--no-weighted-sampling", dest="weighted_sampling", action="store_false")
+    parser.add_argument("--simple-loss", action="store_true", 
+        help="Use simple weighted CE loss instead of complex F1-optimized loss (for debugging)")
     
     # Output
     parser.add_argument("--save-dir", type=str, default="checkpoints")

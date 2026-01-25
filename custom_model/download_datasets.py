@@ -115,6 +115,26 @@ def map_label(label: str) -> Optional[str]:
     return None
 
 
+def _safe_get_value(row, keys: List[str], default=""):
+    """
+    Safely get a value from a pandas row, handling NaN values.
+    
+    Args:
+        row: pandas Series (row from DataFrame)
+        keys: list of column names to try in order
+        default: default value if all keys are missing or NaN
+    
+    Returns:
+        The first non-NaN value found, or default
+    """
+    for key in keys:
+        if key in row.index:
+            val = row[key]
+            if pd.notna(val):
+                return val
+    return default
+
+
 # ============================================================================
 # Dataset Definitions
 # ============================================================================
@@ -685,13 +705,13 @@ def _process_milk10k_specific(
         images.append(str(img_path))
         labels.append(label)
         
-        # Extract metadata
+        # Extract metadata (handle NaN values)
         image_type = row.get("image_type", "")
         meta = {
-            "age": row.get("age_approx", ""),
-            "sex": row.get("sex", ""),
-            "localization": row.get("site", row.get("anatom_site", "")),
-            "skin_tone": row.get("skin_tone_class", ""),
+            "age": _safe_get_value(row, ["age_approx", "age"], ""),
+            "sex": _safe_get_value(row, ["sex", "gender"], ""),
+            "localization": _safe_get_value(row, ["site", "anatom_site", "localization"], ""),
+            "skin_tone": _safe_get_value(row, ["skin_tone_class"], ""),
             "image_type": image_type,
         }
         metadata_list.append(meta)
@@ -835,9 +855,9 @@ def process_ham10000(data_dir: Path) -> Tuple[List[str], List[str], List[dict]]:
         images.append(str(img_path))
         labels.append(label)
         metadata.append({
-            "age": row.get("age"),
-            "sex": row.get("sex"),
-            "localization": row.get("localization"),
+            "age": _safe_get_value(row, ["age", "age_approx"], ""),
+            "sex": _safe_get_value(row, ["sex", "gender"], ""),
+            "localization": _safe_get_value(row, ["localization", "anatom_site_general", "site"], ""),
         })
     
     print(f"  ✓ Processed {len(images)} images")
@@ -860,6 +880,34 @@ def process_isic_2019(data_dir: Path) -> Tuple[List[str], List[str], List[dict]]
         return process_folder_dataset(data_dir)
     
     df = pd.read_csv(csv_path)
+    
+    # Load metadata file if available (ISIC 2019 has separate metadata)
+    meta_df = None
+    meta_path = None
+    for pattern in ["*Metadata*.csv"]:
+        matches = list(data_dir.rglob(pattern))
+        if matches:
+            meta_path = matches[0]
+            break
+    
+    if meta_path:
+        try:
+            meta_df = pd.read_csv(meta_path)
+            print(f"  Found metadata: {meta_path.name}")
+            # Create lookup by image name
+            meta_lookup = {}
+            for _, row in meta_df.iterrows():
+                img_name = str(row.get("image", ""))
+                meta_lookup[img_name] = {
+                    "age": _safe_get_value(row, ["age_approx", "age"], ""),
+                    "sex": _safe_get_value(row, ["sex", "gender"], ""),
+                    "localization": _safe_get_value(row, ["anatom_site_general", "localization", "site"], ""),
+                }
+        except Exception as e:
+            print(f"  Warning: Could not load metadata: {e}")
+            meta_lookup = {}
+    else:
+        meta_lookup = {}
     
     # ISIC 2019 uses one-hot encoding
     class_cols = ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC"]
@@ -899,9 +947,14 @@ def process_isic_2019(data_dir: Path) -> Tuple[List[str], List[str], List[dict]]
         
         images.append(str(img_path))
         labels.append(label)
-        metadata.append({})
+        
+        # Get metadata from lookup
+        meta = meta_lookup.get(img_name, {"age": "", "sex": "", "localization": ""})
+        metadata.append(meta)
     
     print(f"  ✓ Processed {len(images)} images")
+    if meta_lookup:
+        print(f"  ✓ Loaded metadata for {len(meta_lookup)} images")
     return images, labels, metadata
 
 
@@ -1043,13 +1096,26 @@ def create_labels_csv(images, labels, metadata, output_path):
     """Create final labels CSV."""
     records = []
     for img, lbl, meta in zip(images, labels, metadata):
+        # Get metadata values, handling NaN
+        age_val = meta.get("age", "")
+        sex_val = meta.get("sex", "")
+        loc_val = meta.get("localization", "")
+        
+        # Convert NaN to empty string
+        if pd.isna(age_val):
+            age_val = ""
+        if pd.isna(sex_val):
+            sex_val = ""
+        if pd.isna(loc_val):
+            loc_val = ""
+        
         records.append({
             "image": img,
             "label": lbl,
             "label_idx": TRICORDER_CLASSES.index(lbl),
-            "age": meta.get("age", ""),
-            "sex": meta.get("sex", ""),
-            "localization": meta.get("localization", ""),
+            "age": age_val,
+            "sex": sex_val,
+            "localization": loc_val,
         })
     
     df = pd.DataFrame(records)
