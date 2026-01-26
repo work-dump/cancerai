@@ -21,10 +21,16 @@ from .model import (
     # Main model
     Tricorder3Model,
     
+    # Advanced model (ISIC competition winner style)
+    ISICWinnerModel,
+    
     # Components
     DemographicsEncoder,
     CrossAttentionFusion,
     ClassifierHead,
+    GeM,
+    SEBlock,
+    MetadataGating,
     
     # Factory functions
     create_model,
@@ -32,6 +38,21 @@ from .model import (
     create_balanced_model,
     create_larger_model,
     create_accurate_model,
+    
+    # Advanced model factory functions
+    create_isic_winner_model,
+    create_isic_winner_small,
+    create_convnext_model,
+    
+    # Vision Transformer factory functions
+    create_vit_model,
+    create_vit_small,
+    create_deit_model,
+    create_deit_small,
+    create_swin_model,
+    
+    # All model creators for easy iteration
+    # MODEL_CREATORS,
     
     # Export utilities
     export_to_onnx,
@@ -48,17 +69,34 @@ from .model import (
 
 __version__ = "1.0.0"
 __all__ = [
+    # Models
     "Tricorder3Model",
+    "ISICWinnerModel",
+    # Components
     "DemographicsEncoder",
     "CrossAttentionFusion",
     "ClassifierHead",
+    "GeM",
+    "SEBlock",
+    "MetadataGating",
+    # Factory functions
     "create_model",
     "create_lightweight_model",
     "create_balanced_model",
     "create_larger_model",
     "create_accurate_model",
+    "create_isic_winner_model",
+    "create_isic_winner_small",
+    "create_convnext_model",
+    "create_vit_model",
+    "create_vit_small",
+    "create_deit_model",
+    "create_deit_small",
+    "create_swin_model",
+    # Export utilities
     "export_to_onnx",
     "verify_onnx_model",
+    # Constants
     "NUM_CLASSES",
     "IMAGE_SIZE",
     "CLASS_NAMES",

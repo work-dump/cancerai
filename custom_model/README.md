@@ -407,16 +407,40 @@ python custom_model/train.py --epochs 100 --batch-size 32 --learning-rate 0.0005
 
 ### Resume Training
 
-Edit `train_config.yaml`:
-```yaml
-checkpoints:
-  resume: "checkpoints/latest.pt"
-```
+There are two ways to resume training:
 
-Or via command line:
+#### Option 1: Continue from checkpoint (same model, continue epoch count)
+
 ```bash
+# Continue training from where it stopped
 python custom_model/train.py --resume checkpoints/latest.pt
 ```
+
+This will:
+- Load model weights AND optimizer state
+- Continue from the saved epoch number
+- If checkpoint was at epoch 30 and you set `--epochs 50`, trains epochs 31-50
+
+#### Option 2: Load weights only (train N more epochs)
+
+```bash
+# Load weights but start fresh training for 50 more epochs
+python custom_model/train.py --resume checkpoints/best_model.pt --resume-weights-only --epochs 50
+```
+
+This will:
+- Load ONLY model weights (not optimizer/epoch)
+- Train for the full number of epochs specified (50 new epochs)
+- Useful for: fine-tuning, training longer, or trying different hyperparameters
+
+#### Option 3: Transfer weights to different architecture
+
+```bash
+# Load weights from balanced model, use with a compatible architecture
+python custom_model/train.py --resume checkpoints/balanced_best.pt --resume-weights-only --model-type isic_winner_small
+```
+
+Note: Only compatible weights will be loaded. Mismatched layers are skipped.
 
 ### Monitor Training with TensorBoard
 
@@ -442,35 +466,74 @@ Epoch 2/50 | Loss: 1.8234 | Val Acc: 0.5234 | Val wF1: 0.4567 | Score: 0.4721
 
 ## Model Architecture
 
-### Input
+### Input/Output (Same for ALL models)
 
 | Input | Shape | Description |
 |-------|-------|-------------|
 | Image | (B, 3, 512, 512) | RGB image, normalized [0,1] |
 | Demographics | (B, 3) | [age, gender, location] |
 
-### Architecture
+| Output | Shape | Description |
+|--------|-------|-------------|
+| Probabilities | (B, 11) | Softmax probabilities for 11 classes |
 
+### Available Model Architectures
+
+All models accept the same input and produce the same output. Choose with `--model-type`:
+
+#### EfficientNet-based (Original)
+
+| Type | Backbone | Size | Efficiency | Description |
+|------|----------|------|------------|-------------|
+| `lightweight` | EfficientNet-B0 | ~20 MB | 1.00 | Smallest model, fast inference |
+| `balanced` | EfficientNet-B0 | ~48 MB | 1.00 | **Default** - good balance |
+| `larger` | EfficientNet-B1 | ~57 MB | 0.93 | Larger backbone |
+
+#### Advanced CNN (ISIC Competition Style)
+
+| Type | Backbone | Size | Efficiency | Description |
+|------|----------|------|------------|-------------|
+| `isic_winner_small` | EfficientNet-B0 + GeM + SE | ~38 MB | 1.00 | Advanced techniques, under 50MB ⭐ |
+| `isic_winner` | EfficientNet-B4 + GeM + SE | ~111 MB | 0.39 | Best CNN accuracy potential |
+| `convnext` | ConvNeXt-Tiny | ~116 MB | 0.34 | Modern CNN architecture |
+
+#### Vision Transformers
+
+| Type | Backbone | Size | Efficiency | Description |
+|------|----------|------|------------|-------------|
+| `vit_small` | ViT-Tiny | ~22 MB | 1.00 | Smallest ViT, full efficiency ⭐ |
+| `deit_small` | DeiT-Tiny | ~22 MB | 1.00 | Data-efficient ViT, full efficiency ⭐ |
+| `vit` | ViT-Small | ~86 MB | 0.64 | Larger Vision Transformer |
+| `deit` | DeiT-Small | ~86 MB | 0.64 | Larger DeiT |
+| `swin` | Swin-Tiny | ~106 MB | 0.44 | Shifted Window Transformer |
+
+### Usage Examples
+
+```bash
+# Default (balanced EfficientNet)
+python custom_model/train.py --data-dir training_data_split
+
+# Vision Transformer (under 50MB)
+python custom_model/train.py --data-dir training_data_split --model-type vit_small
+
+# DeiT (data-efficient, often better than ViT)
+python custom_model/train.py --data-dir training_data_split --model-type deit_small
+
+# ISIC competition winner style (advanced EfficientNet)
+python custom_model/train.py --data-dir training_data_split --model-type isic_winner_small
+
+# Larger model for maximum accuracy (lower efficiency score)
+python custom_model/train.py --data-dir training_data_split --model-type isic_winner --batch-size 32
 ```
-EfficientNet-B0 (pretrained, frozen)
-       ↓
-Cross-Attention Fusion ← Demographics Encoder
-       ↓
-Classifier Head (MLP)
-       ↓
-Softmax (11 classes)
-```
 
-### Output
-- 11 probabilities summing to 1.0
+### Recommendations
 
-### Model Variants
-
-| Type | Size | Parameters | Use Case |
-|------|------|------------|----------|
-| `lightweight` | ~20 MB | ~5M | Fast inference |
-| `balanced` | ~45 MB | ~12M | **Recommended** |
-| `larger` | ~80 MB | ~25M | Maximum accuracy |
+| Goal | Recommended Model |
+|------|-------------------|
+| Full efficiency score (model ≤50MB) | `balanced`, `isic_winner_small`, `vit_small`, `deit_small` |
+| Best accuracy (any size) | `isic_winner`, `swin`, `vit` |
+| Quick experiments | `lightweight`, `vit_small` |
+| Vision Transformer | `vit_small` (small), `swin` (large) |
 
 ---
 

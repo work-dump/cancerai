@@ -95,6 +95,19 @@ from custom_model import (
     verify_onnx_model,
     Tricorder3Model,
     
+    # Advanced Models (ISIC competition winner style)
+    ISICWinnerModel,
+    create_isic_winner_model,
+    create_isic_winner_small,
+    create_convnext_model,
+    
+    # Vision Transformer Models
+    create_vit_model,
+    create_vit_small,
+    create_deit_model,
+    create_deit_small,
+    create_swin_model,
+    
     # Trainer
     Tricorder3Trainer,
     TrainingConfig,
@@ -592,13 +605,24 @@ def train(args):
     
     # Create model
     print(f"\nCreating model: {args.model_type}")
-    if args.model_type == "lightweight":
-        model = create_lightweight_model()
-    elif args.model_type == "balanced":
-        model = create_balanced_model()
-    elif args.model_type == "larger":
-        model = create_larger_model()
+    model_creators = {
+        "lightweight": create_lightweight_model,
+        "balanced": create_balanced_model,
+        "larger": create_larger_model,
+        "isic_winner": create_isic_winner_model,
+        "isic_winner_small": create_isic_winner_small,
+        "convnext": create_convnext_model,
+        "vit": create_vit_model,
+        "vit_small": create_vit_small,
+        "deit": create_deit_model,
+        "deit_small": create_deit_small,
+        "swin": create_swin_model,
+    }
+    
+    if args.model_type in model_creators:
+        model = model_creators[args.model_type]()
     else:
+        print(f"  Unknown model type '{args.model_type}', using balanced")
         model = create_balanced_model()
     
     params = model.count_parameters()
@@ -635,6 +659,7 @@ def train(args):
         val_dataset,
         use_weighted_sampling=args.weighted_sampling,
         resume_from=args.resume,
+        resume_weights_only=args.resume_weights_only,
     )
     
     # Final evaluation
@@ -763,8 +788,15 @@ def parse_args():
     parser.add_argument(
         "--model-type", type=str, 
         default=get_config_value(config, 'model', 'type', default="balanced"),
-        choices=["lightweight", "balanced", "larger"],
-        help="Model type to use"
+        choices=[
+            "lightweight", "balanced", "larger",  # Original EfficientNet models
+            "isic_winner", "isic_winner_small", "convnext",  # Advanced CNN models
+            "vit", "vit_small", "deit", "deit_small", "swin",  # Vision Transformer models
+        ],
+        help="Model type: "
+             "EfficientNet: lightweight/balanced/larger | "
+             "Advanced: isic_winner/isic_winner_small/convnext | "
+             "ViT: vit/vit_small/deit/deit_small/swin"
     )
     
     # Training
@@ -799,6 +831,13 @@ def parse_args():
     parser.add_argument(
         "--resume", type=str, default=None,
         help="Path to checkpoint to resume training from (e.g., checkpoints/latest.pt)"
+    )
+    parser.add_argument(
+        "--resume-weights-only", action="store_true",
+        help="Only load model weights from checkpoint (not optimizer/epoch). "
+             "Use this to: 1) train N more epochs from checkpoint, "
+             "2) fine-tune with new optimizer settings, "
+             "3) transfer weights to compatible architecture"
     )
     
     # TensorBoard

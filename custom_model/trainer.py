@@ -1171,6 +1171,7 @@ class Tricorder3Trainer:
         val_dataset: Dataset,
         use_weighted_sampling: bool = True,
         resume_from: Optional[str] = None,
+        resume_weights_only: bool = False,
     ) -> Dict[str, List[float]]:
         """
         Train the model.
@@ -1180,6 +1181,9 @@ class Tricorder3Trainer:
             val_dataset: Validation dataset
             use_weighted_sampling: Whether to use class-balanced sampling
             resume_from: Path to checkpoint to resume training from
+            resume_weights_only: If True, only load model weights (not optimizer/epoch).
+                                 Use this when transferring weights to a different architecture
+                                 or when you want to train N more epochs from a checkpoint.
         
         Returns:
             Training history
@@ -1187,10 +1191,17 @@ class Tricorder3Trainer:
         # Resume from checkpoint if specified
         start_epoch = 0
         if resume_from:
-            # weights_only=False needed for PyTorch 2.6+ to load TrainingConfig
-            checkpoint = self.load_checkpoint(resume_from, resume_training=True, weights_only=False)
-            start_epoch = checkpoint.get("epoch", 0) + 1
-            print(f"Resuming from epoch {start_epoch}")
+            if resume_weights_only:
+                # Only load model weights, start fresh training
+                # This allows: 1) using different architecture, 2) training N more epochs
+                self.load_weights_only(resume_from)
+                print(f"Loaded weights from {resume_from}")
+                print(f"Starting fresh training for {self.config.epochs} epochs")
+            else:
+                # Full resume: load weights, optimizer, and continue from saved epoch
+                checkpoint = self.load_checkpoint(resume_from, resume_training=True, weights_only=False)
+                start_epoch = checkpoint.get("epoch", 0) + 1
+                print(f"Resuming from epoch {start_epoch}, will train until epoch {self.config.epochs}")
         
         # Create data loaders
         if use_weighted_sampling:
@@ -1376,6 +1387,58 @@ class Tricorder3Trainer:
             print(f"Loaded checkpoint from {path}")
         
         return checkpoint
+    
+    def load_weights_only(self, path: str, strict: bool = False):
+        """
+        Load only model weights from checkpoint (not optimizer/epoch).
+        
+        This is useful for:
+        1. Loading pretrained weights into a different (but compatible) architecture
+        2. Starting fresh training from a checkpoint (train N more epochs)
+        3. Fine-tuning from a checkpoint with new optimizer settings
+        
+        Args:
+            path: Path to checkpoint file
+            strict: If True, requires exact match of model architecture.
+                    If False, loads compatible weights and ignores mismatches.
+        """
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        
+        if "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        else:
+            # Assume it's just a state dict
+            state_dict = checkpoint
+        
+        # Try to load weights
+        if strict:
+            self.model.load_state_dict(state_dict)
+            print(f"Loaded all weights from {path}")
+        else:
+            # Load compatible weights, ignore mismatches
+            model_state = self.model.state_dict()
+            loaded_keys = []
+            skipped_keys = []
+            
+            for key, value in state_dict.items():
+                if key in model_state:
+                    if model_state[key].shape == value.shape:
+                        model_state[key] = value
+                        loaded_keys.append(key)
+                    else:
+                        skipped_keys.append(f"{key} (shape mismatch: {value.shape} vs {model_state[key].shape})")
+                else:
+                    skipped_keys.append(f"{key} (not in model)")
+            
+            self.model.load_state_dict(model_state)
+            
+            print(f"Loaded {len(loaded_keys)} weights from {path}")
+            if skipped_keys:
+                print(f"Skipped {len(skipped_keys)} incompatible weights:")
+                for key in skipped_keys[:5]:  # Show first 5
+                    print(f"  - {key}")
+                if len(skipped_keys) > 5:
+                    print(f"  ... and {len(skipped_keys) - 5} more")
 
 
 # ============================================================================
